@@ -1,0 +1,41 @@
+{
+  "workItem": "WTLS-207",
+  "clauses": [
+    "WTLS-CL-PROTECTED-ALERT-LIFECYCLE"
+  ],
+  "objective": "Implement inbound alert lifecycle for the standalone WTLS authenticated wire peer under WAP-199 \u00a7\u00a710.1 and 10.2\u201310.2.2, preserving the current public PeerAlert diagnostic fields and close APIs. After a receive epoch is committed (including a resumed client awaiting confirmation), an alert authenticated by the current record keys and correlated by its checksum terminates that association if critical or fatal. Choose to preserve the cache on a critical alert. A protected fatal alert invalidates only the exact session this association established or resumed. Return the existing PeerAlert diagnostic for general alerts; do not reply to a generic terminal alert with a close notification. Preserve connection_close_notify and session_close_notify acknowledgement behavior. Warnings have no lifecycle effects. Preserve the current clear-alert diagnostic behavior during negotiation and no effect on an established association or any shared cache. An uncommitted receive epoch, incorrect checksum, failed record authentication or malformed alert cannot revoke a cached session. Discard data from a datagram whose valid generic terminal alert ends the association. Reuse the exact-entry cache invalidation and terminal key cleanup already used for session close. Avoid adding a general-purpose public alert sender just for testing. Add test-first deterministic wire tests using ordinary toy peers and local legitimate alert generation, covering fatal invalidation and stale ID full fallback, preservation on critical and diagnostic clear/warning alerts, no effect from an uncommitted receive epoch, and isolation from other cached sessions and from connections that are already open. Exercise both endpoint roles if practical, including resumed flows and how a failed resume affects the cache. Keep the existing 76-test suite passing. The lead owns live BlackBerry Connection and Session close, reconnect outcome, and capture. Work only in this wtls-lab worktree.",
+  "paths": [
+    "src/wire.rs",
+    "src/wire/codec.rs",
+    "src/wire/alert_tests.rs",
+    "src/handshake.rs",
+    "tests/wire_resumption.rs",
+    "tests/protected_echo.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--lib"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "wire_resumption"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "protected_echo"
+    ]
+  ],
+  "timeoutSeconds": 720
+}

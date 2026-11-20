@@ -97,6 +97,13 @@
         "peerObservation": "Both reconnect hellos carried a3ae109830b84aa6. The server committed first, verified the client Finished and received the acknowledgement for its protected WSP reply.",
         "captureSha256": "6f8a16723e0fafbbc70953a797fbe8053714c6b401cfecdf93fa761cecd0031c"
       }
+    },
+    {
+      "id": "WTLS-CL-PROTECTED-ALERT-LIFECYCLE",
+      "workItem": "WTLS-207",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a, §§10.1, 10.2–10.2.2 and Appendix B.4",
+      "statement": "A verified fatal alert terminates the connection and invalidates its session. A verified critical alert terminates the connection and may preserve the session. Connection close preserves the session, session close invalidates it, and a clear observation has no authority to invalidate an existing valid session."
     }
   ]
 }

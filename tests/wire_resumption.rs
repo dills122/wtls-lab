@@ -147,11 +147,12 @@ fn resumed_commit(
             (RecordType::Handshake, CipherSpec::Current, 0),
         ]
     );
+    // WAP-199 §§10.3 and 10.5.1.3: return the one-based index of the offered RSA entry.
     assert_eq!(
         decode_server_hello(records[0].fragment)
             .unwrap()
             .key_exchange_index,
-        0
+        1
     );
     assert_eq!(records[1].fragment, [1]);
 
@@ -496,7 +497,7 @@ fn matching_id_requires_an_abbreviated_flight_and_unverified_finished_keeps_cach
     let valid = send(&servers.peer(NOW).unwrap().receive(&offer, 13).unwrap());
     let mut records = decode_datagram(&valid).unwrap();
     let mut hello = records[0].fragment.to_vec();
-    hello[29] = 1; // A valid key ID, but distinct ServerHello transcript bytes.
+    hello[29] = 0; // Another allowed abbreviated key index changes the transcript.
     records[0].fragment = &hello;
     let tampered = encode_datagram(&records).unwrap();
     assert_eq!(

@@ -141,7 +141,7 @@ impl ServerSelection {
             offer
                 .check_record_choices(parameters)
                 .map_err(|_| WireError::UnsupportedProfile)?;
-            0
+            offer.select_key_exchange(parameters).unwrap_or(0)
         } else {
             offer
                 .select_key_exchange(parameters)

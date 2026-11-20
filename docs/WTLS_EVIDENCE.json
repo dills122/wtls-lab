@@ -1,0 +1,11 @@
+{
+  "clauses": [
+    {
+      "id": "WTLS-CL-SESSION-CACHE-MISS",
+      "workItem": "WTLS-201",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a, §§10.5.1.2–10.5.1.3 (18 February 2000)",
+      "statement": "When the server cannot resume an offered session and the client supplies a usable full-handshake offer, the server may proceed with a full handshake under a different session ID. A server may also return an empty ID for an uncached new session. Preserve the actual ClientHello in the Finished transcript."
+    }
+  ]
+}

@@ -1,1 +1,4 @@
 /target/
+/.serena/
+/.ruflo-local/
+__pycache__/

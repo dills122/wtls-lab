@@ -1,0 +1,8 @@
+{
+  "workItem": "WTLS-201",
+  "clauses": ["WTLS-CL-SESSION-CACHE-MISS"],
+  "objective": "Allow the opt-in legacy WinWAP server to choose a new full handshake when a ClientHello names an old session and still offers the supported anonymous RSA, DES-CBC and full SHA-1 profile. Treat all offered IDs as cache misses in this server profile. Preserve the exact received ClientHello bytes for Finished verification. Keep the authenticated profile policy, ordinary empty-ID behavior and byte-identical retries. The typed state machine keeps its eight-byte SessionId model. Test both an eight-byte offered ID and a short offered ID using variants of the existing WinWAP offer. Show a full server flight with ServerKeyExchange and ServerHelloDone and a selected ID distinct from the offered ID. Test that an offer with a session ID but without a usable full-handshake offer remains rejected. This is full-handshake fallback, with no abbreviated wire handshake or changes to the lab WSP adapter.",
+  "paths": ["src/wire.rs", "src/wire/legacy.rs", "tests/legacy_winwap.rs"],
+  "checks": [["cargo", "test", "--locked", "--offline", "--test", "legacy_winwap"]],
+  "timeoutSeconds": 480
+}

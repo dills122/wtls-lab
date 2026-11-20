@@ -12,8 +12,47 @@ For each WTLS slice, prepare a packet with the objective, WAP edition and specif
 - **Checks** — `cargo test --locked --offline`, `cargo clippy --locked --offline --all-targets -- -D warnings`, and `cargo fmt --all --check`. Verify suite selection, exact duplicate-flight handling, and the existing authenticated profile.
 - **Peer evidence** — Capture UDP 9202 between the guest and the Rust endpoint. Correlate the protected WSP request and reply with the endpoint log and a WinWAP screen when available. Keep this maintainer-run gate distinct from deterministic Cargo results.
 
-## Porting the runner
+## Run the WTLS loop
 
-The current workspace is a standalone directory. This slice uses a scoped scratch copy, Cargo gates, and a separate maintainer VM run. To run the same automation, use a clean Git baseline and a linked worktree in the WTLS repository. Preserve the pilot's pinned bootstrap, narrow tool surface, bounded writer, checkpoint guard, and independent read-only review. Replace the WML-specific clause-pack lookup and full WAP gate with a WTLS evidence manifest and the packet's locked Cargo checks. Keep the XP run a separate gate with recorded artifacts. The resulting WTLS runner should operate from its own working directory.
+The local runner ports the supervisor from wap-labs commit
+`0b42eaac49dc473e2f58a4d3c0c1bdbc6146baba`. It uses the WTLS evidence manifest
+and the focused packet checks, followed by locked offline Cargo tests, Clippy,
+and formatting. The supervisor requires one clean feature worktree and holds
+a repository-wide claim until verification and release.
 
-Follow the runner guide's `claim <packet> --worktree <path>`, `work`, `verify`, and `release` sequence once those WTLS hooks are in place. The upstream runner is tied to wap-labs and expects its WML ledger and graph.
+Use Python 3.11+, Node 26, an authenticated local Codex CLI, and the pinned Ruflo
+3.77.1 release. An existing installation from the wap-labs pilot can be reused
+read-only by setting `WTLS_RUFLO_RELEASE` to its release directory. Alternatively,
+use the wap-labs bootstrap and package lock from the pinned revision and set
+`WTLS_RUFLO_RELEASE` to that installation. The runner verifies the release's
+lockfile and installation marker. It invokes Ruflo through the pinned shim.
+Keep packets local and trusted. Their checks are executable argument arrays.
+
+```sh
+git worktree add -b codex/wtls-201 /path/to/wtls-201
+python3 -B scripts/ruflo/compliance_loop.py claim scripts/ruflo/packets/WTLS-201.json --worktree /path/to/wtls-201
+python3 -B scripts/ruflo/compliance_loop.py work
+python3 -B scripts/ruflo/compliance_loop.py status
+# Inspect and commit the scoped candidate in its linked worktree.
+python3 -B scripts/ruflo/compliance_loop.py verify
+python3 -B scripts/ruflo/compliance_loop.py release
+```
+
+Verification reruns the packet checks and all Cargo gates, then launches a fresh
+read-only Ruflo reviewer against the exact candidate commit. The claim, context,
+checkpoint, logs and receipt live under the repository's Git common directory at
+`ruflo-wtls-loop/`. Use `resume` for a scoped interrupted checkpoint or a
+reviewed candidate requiring changes. The supervisor checks the branch and file
+digests before resuming. Release the verified claim after gathering any required
+independent peer evidence, then reconcile the evidence manifest as the maintainer.
+
+Use `python3 -B -m unittest discover -s scripts/ruflo -p '*_test.py'` to test
+the supervisor without starting Ruflo or contacting Codex.
+
+## Execution index
+
+| Work item | Scope | Verification |
+| --- | --- | --- |
+| WTLS-201 | Fall back to a new full legacy handshake when an offered session cannot be resumed | Scoped legacy tests, all Cargo gates, exact-commit review |
+| Next candidate | Independent server-authenticated interoperability | Find a capable historical peer and record its actual authenticated offer first |
+| Later candidate | Abbreviated wire handshake | Specify cache ownership, lifetime and wire confirmation before expanding the engine |

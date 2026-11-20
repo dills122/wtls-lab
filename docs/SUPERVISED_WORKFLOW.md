@@ -55,5 +55,6 @@ the supervisor without starting Ruflo or contacting Codex.
 | --- | --- | --- |
 | WTLS-201 (verified) | Fall back to a new full legacy handshake when an offered session cannot be resumed | Scoped legacy tests, all Cargo gates, exact-commit review. See [the evidence manifest](WTLS_EVIDENCE.json) and [the completed packet](../scripts/ruflo/packets/WTLS-201.json). |
 | WTLS-202 (verified) | Observe WinWAP after a protected connection close | Live XP capture with two successful buffered exchanges and empty ClientHello IDs. The [evidence manifest](WTLS_EVIDENCE.json) records the scoped result. |
-| Next candidate | Independent server-authenticated interoperability | Find a capable historical peer and record its actual authenticated offer first |
+| WTLS-203 (verified at ClientHello) | Screen and run an independent historical peer | The BlackBerry 7290 simulator offered authenticated RSA and the lab's cipher/MAC pair on UDP 9203. The fixed profile rejected the hello before key selection. See [the capture provenance](../fixtures/HISTORICAL_PEERS.md). |
+| Next candidate | Independent server-authenticated interoperability | Select the implemented tuple from the captured BlackBerry offer and establish an explicit basis for certificate trust |
 | Later candidate | Abbreviated wire handshake | Specify cache ownership, lifetime and wire confirmation before expanding the engine |

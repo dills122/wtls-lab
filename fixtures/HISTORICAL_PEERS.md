@@ -1,8 +1,8 @@
 # Historical WTLS peer candidates
 
 WTLS-203 screens a second historical client alongside the existing WinWAP
-fixtures. The maintainer's disposable XP gate is pending for all candidates.
-The ranking uses the lead's installer inventory and published documentation.
+fixtures. The BlackBerry 7290 simulator reached the authenticated lab endpoint
+in disposable XP. The screening below records the original candidate ranking.
 
 ## Candidate ranking
 
@@ -48,8 +48,54 @@ and timestamps.
 | Cached offer or stale-ID fallback | Compare the reconnect ClientHello's raw ID to the ServerHello ID issued in an earlier completed exchange. An initial nonempty ID with no recorded issuance is an uncorrelated offer. If the server declines the offered ID and sends a different ID with a full handshake, record full-handshake fallback. Call the offer stale when cache expiry, invalidation, or absence is evidenced. |
 | Abbreviated resumption | Correlate the reconnect offer with the earlier issued ID and verify that the new ServerHello echoes the same bytes. Observe the server ChangeCipherSpec and protected Finished before the client's ChangeCipherSpec and protected Finished, with the full certificate and key-exchange flight absent. Correlate both verified Finished messages and subsequent protected traffic. |
 
-The current wire adapter covers the full handshake. The typed state-machine
-tests cover abbreviated handshakes. Live screening, authentication, and
-resumption results remain pending for the maintainer to record.
-[Lab profiles and fixtures](../README.md) ·
-[WAP-199-WTLS-20000218-a, §§10.3, 10.5.1.2–10.5.1.3 and Appendix A](https://www.openmobilealliance.org/tech/affiliates/wap/Technical_June2000-20021106%5B1%5D.zip)
+## BlackBerry 7290 simulator result
+
+The RIM BlackBerry JDE 4.0 installer (`JDE_4.0.exe`, SHA-256
+`10f73ec16376e617cdf74bbe79c6332e38c64e8338751acf704412a96e19afb0`)
+installed in a disposable Windows XP disk overlay. Its stock `7290.bat`
+launched a simulated 7290. This `fledge` binary rejected the developer guide's
+`/rport=8205` option. The stock launch sent traffic from UDP 8205.
+[RIM JDE archive](https://archive.org/details/blackberry-jde) ·
+[RIM 4.0 developer guide](https://media.journoportfolio.com/users/51888/uploads/84f291ae-c7fa-4cc3-b63b-491729e2fb2b.pdf)
+
+In the built-in Browser, use **Go To** with
+`http://lab.invalid/probe;WAPGatewayIP=10.0.2.2;WAPGatewayAPN=rim.net.gprs;WAPGatewayPort=9203`.
+The guide documents WTLS enabled by default on port 9203 for the explicit
+gateway path. The tests used another request path on each attempt. The
+isolated QEMU guest sent from `10.0.2.15:8205` to `10.0.2.2:9203`. A UDP
+observer passed each received datagram directly to the unchanged authenticated
+`WirePeer::server` using a generated lab certificate. The peer recorded the
+profile error and stayed idle.
+
+- All three requests started with fresh randoms and empty IDs. Each sent
+  one 925-byte ClientHello and five byte-identical retries, then a clear fatal
+  `handshake_failure` alert. The endpoint logged the profile rejection on both
+  live runs. The listener had timed out before the middle request, whose
+  observations came from the guest capture.
+- The client preferred unrestricted authenticated RSA (8). It also offered
+  RSA_768 (10) and RSA_512 (9), followed by anonymous options. The first of
+  48 cipher/MAC pairs was the lab's 3DES-CBC-EDE (6) and full SHA (3). The hello
+  contained 10 key exchange offers, 28 trusted-key hashes, null compression,
+  explicit sequence mode (2), and offered key refresh 5.
+- The current fixed profile rejects the shape of the offer at its singleton
+  RSA and empty trusted-key check. The preferred RSA entry also carries a
+  binary identifier, and the client offered multiple cipher/MAC pairs. The
+  server produced no ServerHello and issued no session ID. Certificate
+  acceptance, protected traffic, a cached-ID offer, and abbreviated resumption
+  remain open.
+
+WAP-199 §10.5.1.3 allows the server to select the offered RSA entry by its
+one-based index, select the offered cipher/MAC pair, and choose a key refresh
+value at or below the client's value. The captured hello supports testing
+selection of the existing authenticated suite. The certificate acceptance
+policy needs its own live check against the advertised trust identifiers.
+[WAP-199 §§10.5.1.2–10.5.2 and Appendix A](https://www.wapforum.org/tech/documents/WAP-199-WTLS-20000218-a.pdf)
+
+The first datagram is in [blackberry-7290-client-hello.hex](blackberry-7290-client-hello.hex).
+The filtered capture `blackberry-7290-9203.pcap` started at
+2026-11-20 17:11:47 UTC and has SHA-256 `a9f3fc7d3e2d187b22470862aae34941c3b9be8d198aecb831768034e34b8a84`. The derived timeline
+`blackberry-7290-9203.trace` has SHA-256 `213f02c0dce19b1ad95667606d0ae327de13ccea7dc3836d80f549a4e314abbf`.
+
+The staged Openwave 7.0.107 installer reached a separate export-eligibility
+screen in XP. That run ended before acceptance. The Openwave 6.2.2 installer
+remains staged for a later test.

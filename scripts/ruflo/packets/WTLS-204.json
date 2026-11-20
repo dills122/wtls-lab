@@ -1,0 +1,46 @@
+{
+  "workItem": "WTLS-204",
+  "clauses": [
+    "WTLS-CL-AUTHENTICATED-OFFER-SELECTION"
+  ],
+  "objective": "Implement and test WAP-199 authenticated full-handshake selection for the captured BlackBerry 7290 ClientHello in fixtures/blackberry-7290-client-hello.hex. In WirePeer::server select the implemented unrestricted RSA parameter-index 0 and 3DES-CBC-EDE/full SHA tuple from the offered vectors, with null compression and explicit sequence numbering. Accept the client identifier as client-side metadata and tolerate advertised server trust hints without treating them as verification or changing configured certificate/identity semantics. Encode the actual one-based index and refresh <= min(client, 3). Reuse the existing legacy selected-offer transcript mechanism where clear, including the unmodified ClientHello, actual ServerHello encoding, and selected refresh for traffic keys. Preserve exact retries and canonical client behavior. A nonempty offered ID with usable full-handshake choices is a cache miss and must get a distinct newly issued ID; never claim wire resumption. Keep the anonymous WinWAP profile explicit and unchanged and reject offers missing any required choice. Keep diagnostics truthful. Write failing tests before edits, including the captured hello and a successful noncanonical authenticated exchange using independently computed expected transcript/Finished or an equivalent deterministic assertion that exact ClientHello and selected ServerHello bytes are used. Cover a non-first index, lower refresh, cached offer fallback, invalid/missing choices, and duplicate flights. WAP-199 (2000) \u00a7\u00a79.1, 10.5.1.2\u201310.5.1.3, 10.5.9, Appendix A. The lead owns independent XP capture, certificate acceptance, and reconnect checks after review. No new cryptographic suites, trust bypasses, external connections, or files outside the packet scope.",
+  "paths": [
+    "src/wire.rs",
+    "src/wire/codec.rs",
+    "src/wire/legacy.rs",
+    "src/wire/protection.rs",
+    "src/handshake.rs",
+    "src/bin/wtls-inspect.rs",
+    "src/bin/wtls-inspect/timeline.rs",
+    "tests/protected_echo.rs",
+    "tests/inspector.rs",
+    "README.md"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "protected_echo"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "inspector"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "legacy_winwap"
+    ]
+  ],
+  "timeoutSeconds": 780
+}

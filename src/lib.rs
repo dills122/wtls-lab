@@ -6,6 +6,7 @@
 #![forbid(unsafe_code)]
 
 pub mod handshake;
+pub mod udp;
 pub mod wire;
 
 use std::error::Error;

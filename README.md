@@ -108,3 +108,16 @@ Select **Secure Connection less** in WinWAP and target the lab gateway on UDP
 9202. Look for separate `wtls=established`, `wsp=get-received`, and
 `wsp=reply-sent` lines. The reply comes from the lab adapter's static deck.
 [Supervised workflow and slice packet](docs/SUPERVISED_WORKFLOW.md)
+
+### Observe WinWAP reconnect after a protected close
+
+```sh
+cargo run --locked --bin wtls-winwap-lab -- --legacy-winwap --probe-session-cache
+```
+
+After the first protected deck renders, reload from the same WinWAP process.
+The probe serves one reply, sends a protected connection-close alert, and
+accepts one more handshake on a fresh peer. The logs show the raw ClientHello
+and ServerHello session IDs separately from WTLS establishment and the WSP
+reply. In the buffered XP trial both requests completed and WinWAP sent an
+empty session ID on each ClientHello. [WTLS evidence](docs/WTLS_EVIDENCE.json)

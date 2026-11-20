@@ -54,5 +54,6 @@ the supervisor without starting Ruflo or contacting Codex.
 | Work item | Scope | Verification |
 | --- | --- | --- |
 | WTLS-201 (verified) | Fall back to a new full legacy handshake when an offered session cannot be resumed | Scoped legacy tests, all Cargo gates, exact-commit review. See [the evidence manifest](WTLS_EVIDENCE.json) and [the completed packet](../scripts/ruflo/packets/WTLS-201.json). |
+| WTLS-202 (verified) | Observe WinWAP after a protected connection close | Live XP capture with two successful buffered exchanges and empty ClientHello IDs. The [evidence manifest](WTLS_EVIDENCE.json) records the scoped result. |
 | Next candidate | Independent server-authenticated interoperability | Find a capable historical peer and record its actual authenticated offer first |
 | Later candidate | Abbreviated wire handshake | Specify cache ownership, lifetime and wire confirmation before expanding the engine |

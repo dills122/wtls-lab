@@ -17,9 +17,18 @@
     {
       "id": "WTLS-CL-CONNECTION-CLOSE-AND-SESSION-OFFER",
       "workItem": "WTLS-202",
-      "status": "open",
+      "status": "verified",
       "source": "WAP-199-WTLS-20000218-a, §§10.2.1, 10.5.1.2–10.5.1.3 (18 February 2000)",
-      "statement": "A critical connection_close_notify ends the current connection. Session closure also invalidates the session ID. On a later ClientHello the server selects a distinct ID for a new full handshake when it cannot resume the offered session."
+      "statement": "A critical connection_close_notify ends the current connection. Session closure also invalidates the session ID. On a later ClientHello the server selects a distinct ID for a new full handshake when it cannot resume the offered session.",
+      "evidence": {
+        "verifiedCommit": "f240eb71648c676805a2d125986279765ec818ed",
+        "claimId": "6d19f543b06444efb036daa84d166a83",
+        "localReceipt": "ruflo-wtls-loop/6d19f543b06444efb036daa84d166a83/receipt.json",
+        "tests": "src/bin/wtls-winwap-lab.rs",
+        "scope": "The opt-in probe sends a protected connection close and starts a fresh peer. The buffered XP run completed full handshakes and protected WSP replies before and after the close.",
+        "peerObservation": "WinWAP 4.2.0.290 sent empty IDs on every captured ClientHello. WTLS-201 stale-ID fallback remains covered by Rust fixtures. Two direct trials showed a separate clear-alert retry failure. The buffered trial completed both protected exchanges.",
+        "bufferedCaptureSha256": "0329747c1835b6afb758c117967ce4db9eb3d91b4dc22f6c08cc3104c3a84009"
+      }
     }
   ]
 }

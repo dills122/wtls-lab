@@ -84,6 +84,40 @@ The wire peer returns `WireError::PeerAlert` for clear observations during negot
 
 Use `DatagramBudget::check` on a complete encoded `WireAction::Send` payload before sending it. The size error includes the encoded byte count and the transport's configured limit. Drivers own delivery observations and must supply them when available. WSP session establishment and origin retrieval are reported by their respective layers.
 
+## Reusable UDP adapter and BlackBerry lab
+
+`wtls_lab::udp::Adapter` routes complete datagrams by remote IP and port. Feed
+it each datagram with the observed source address, Unix certificate time, and a
+shared monotonic millisecond clock. Send each `Event::Send` as one datagram to
+the given destination. Call `tick` by the reported `deadline`, and handle
+delivery, close, timeout, and diagnostic events separately. `SocketTransport`
+provides the equivalent whole-datagram I/O for a standard UDP socket.
+
+The adapter enforces a datagram budget and an association capacity. A pending
+inbound handshake has a configurable fixed deadline that duplicate flights
+cannot extend. An open association retains its slot until closed. A shared
+authenticated server context lets a fresh ClientHello resume after Connection
+close, and permits a full reconnect after Session close. The adapter keeps
+a bounded history of retired ClientHello randoms keyed by remote address.
+
+```sh
+cargo run --locked --offline --bin wtls-udp-lab
+```
+
+The sample binds `127.0.0.1:9203` and serves one static WML page through its
+minimal WTP/WSP responder. Run it on the same isolated network as the
+historical client. The sample allows 300 seconds for certificate inspection.
+In the BlackBerry WTLS options, enable **Prompt For Server Trust**. Open
+`http://lab.invalid/resume;WAPGatewayIP=10.0.2.2;WAPGatewayAPN=rim.net.gprs;WAPGatewayPort=9203`
+when using the XP guest's QEMU loopback gateway. Compare the displayed leaf
+thumbprint with the printed fingerprint before accepting it.
+
+After `wsp=page-ack`, enter `connection-close` on stdin and refresh the
+Browser. Verify `handshake=Resumed` and another page acknowledgment. Enter
+`session-close` and refresh again. Verify `handshake=Full` and a page
+acknowledgment. The stdin commands target the most recently established
+association. [BlackBerry run and wire trace](fixtures/HISTORICAL_PEERS.md#blackberry-reconnect-through-the-udp-adapter)
+
 ## Direct WinWAP compatibility test
 
 `wire::WirePeer::legacy_winwap_server` explicitly selects the anonymous RSA,

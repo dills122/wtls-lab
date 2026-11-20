@@ -205,3 +205,26 @@ The [trace](blackberry-7290-close-reconnect.trace) contains 37 UDP payloads. Its
 transitions and the protected WSP acknowledgements. Native wire tests
 exercise generic critical, fatal, warning, and unauthenticated alert
 handling. [WAP-199 §§10.2–10.2.2](https://www.wapforum.org/tech/documents/WAP-199-WTLS-20000218-a.pdf)
+
+## BlackBerry reconnect through the UDP adapter
+
+The WTLS-208 rerun used the stock BlackBerry 7290 simulator from JDE 4.0 in
+the isolated Windows XP overlay. The endpoint was the checked-in
+`wtls-udp-lab` binary on UDP 9203, built offline from `b020b14`.
+With the handset's **Prompt For Server Trust** enabled, the operator matched
+the displayed native WTLS leaf SHA-1 thumbprint (`1c29c317f42f4ef2255e667e867d9f36d328c305`) before accepting
+it on both full handshakes. A first candidate timed out during manual
+certificate inspection. The verified lab binary budgets 300 seconds for a
+pending server handshake. [BlackBerry 7290 user guide](https://www.att.com/support_static_files/manuals/BlackBerry_7290.pdf)
+
+| Stage | Observed WTLS result | Protected WSP result |
+| --- | --- | --- |
+| Initial request | Full handshake issued `9db23b7437c71aed` | Page reply acknowledged |
+| Refresh after `connection-close` | BlackBerry offered `9db23b7437c71aed`, server echoed it, and the abbreviated handshake completed | Page reply acknowledged |
+| Refresh after `session-close` | BlackBerry offered `9db23b7437c71aed` again. The server issued `1ec65ed3a1559f86` and completed a full certificate handshake | Page reply acknowledged |
+
+The [trace](blackberry-7290-udp-adapter.trace) contains 42 UDP payloads. Its SHA-256 is
+`62dd2cae9aae23f8cc8b7d772caa3f2167ddb4cfb534ce56d4d8de80ef7caac7`. The filtered PCAP SHA-256 is
+`4b0992f01d7645924c7542b6acddea5067d14475fb0e8f7c745a727c8496c36d`. The endpoint logged verified Finished messages and a matching
+protected WTP acknowledgment for the page's transaction ID at each stage.
+[WAP-199 §§10.2–10.4](https://www.wapforum.org/tech/documents/WAP-199-WTLS-20000218-a.pdf)

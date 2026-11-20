@@ -119,9 +119,20 @@
     {
       "id": "WTLS-CL-UDP-ADAPTER-RETRY",
       "workItem": "WTLS-208",
-      "status": "open",
-      "source": "WAP-199-WTLS-20000218-a, §§9.2.3.1, 10.2.1–10.2.2 and 10.3",
-      "statement": "A datagram transport preserves association routing and service data unit boundaries, and drives the protocol retry timer after lost delivery. With one server session context, Connection close allows an abbreviated reconnect and Session close causes a full reconnect when the peer offers its prior ID."
+      "status": "verified",
+      "source": "WAP-199-WTLS-20000218-a, §§9.2.3.1 and 10.2.1–10.4",
+      "statement": "A datagram transport preserves association routing and service data unit boundaries, and drives the protocol retry timer after lost delivery. With one server session context, Connection close allows an abbreviated reconnect and Session close causes a full reconnect when the peer offers its prior ID.",
+      "evidence": {
+        "verifiedCommit": "b020b1417f3728c43d19ef400ae7a11148926663",
+        "claimId": "31338e720d474b55b7033dfc0bb374ad",
+        "localReceipt": "ruflo-wtls-loop/31338e720d474b55b7033dfc0bb374ad/receipt.json",
+        "tests": "tests/udp_adapter.rs",
+        "provenance": "fixtures/HISTORICAL_PEERS.md",
+        "fixture": "fixtures/blackberry-7290-udp-adapter.trace",
+        "scope": "Exact Ruflo review and 91 Rust tests. Dropping a server flight in the deterministic adapter link preserved the original retransmission bytes and allowed a protected echo. A real loopback socket exercised whole datagram delivery. A separate live run exercised both close scopes on the checked-in sample.",
+        "peerObservation": "BlackBerry resumed 9db23b7437c71aed after Connection close and reoffered it after Session close. The sample issued 1ec65ed3a1559f86 in a full handshake. Matching protected WSP page acknowledgments followed all three handshakes.",
+        "captureSha256": "4b0992f01d7645924c7542b6acddea5067d14475fb0e8f7c745a727c8496c36d"
+      }
     }
   ]
 }

@@ -1,0 +1,42 @@
+{
+  "workItem": "WTLS-208",
+  "clauses": [
+    "WTLS-CL-UDP-ADAPTER-RETRY"
+  ],
+  "objective": "Build the WTLS-208 reusable UDP adapter and authenticated BlackBerry WSP lab app in standalone wtls-lab. WAP-199 \u00a7\u00a79.2.3.1 and 10.3 datagram flight and timer behavior and \u00a7\u00a710.2.1\u201310.2.2 close semantics stay owned by WirePeer. Adopt a small public adapter boundary under wtls_lab::udp that routes SocketAddr associations, accepts/sends whole datagrams (DatagramBudget checked, no silent truncation), creates fresh server peers from a shared ResumableServer on a valid new ClientHello after terminal close (and for a new address), supports outbound client setup, exposes or drives WirePeer::deadline/tick, and supports application sends, close, and state/diagnostic events. Do not let arbitrary packets create/replace associations, misroute replies or evict another active peer. Bound table/terminal retention with a documented simple policy and preserve the distinction between socket errors, protocol diagnostics and authenticated delivery. Keep the deterministic driver boundary independent of time and socket I/O, with an ordinary std::net::UdpSocket implementation used by the actual app and covered by a loopback smoke test where practical. Write and run failing focused test first, then implement: discard the first normal flight in a deterministic injected lab transport, advance the same adapter path to just before the exact retry deadline then the deadline, assert byte-identical retry and successful authenticated protected echo, with no sleeps or live client. A focused routing/closure/reconnect test is welcome. No new dependency, no changes to WirePeer, existing WinWAP adapter or Waves. Add wtls-udp-lab authenticated sample/test executable using the adapter. It should bind loopback UDP 9203 by default, generate a short-lived lab native WTLS certificate and print leaf SHA1/SHA256 for manual comparison, expose explicit Connection and Session close commands for the current lab connection (a private operator control directory with connection-close/session-close marker files or stdin is fine, document invocation), and keep WTP/WSP smoke behavior in the executable only. Match the WTLS-207 evidence on a stock BlackBerry: class-2 single-PDU WTP (invoke 08/0a and flags class 2, Result 16 with TID high OR 80), WSP Connect 01 response [02,1,0,0], GET 40 response [04,20,01,88] + the small static WML page. Log remote and new handshake kind, scope of closes, and verified acknowledgment of the matching protected WSP page TID (first byte 18); log metadata, never application payload or secret/key material. Prefer page text WTLS lab close and reconnect. Keep existing docs and all test gates passing. Report the executable invocation and address/reconnect/retry policy so the lead can document it in README. The lead owns isolated BlackBerry live rerun/capture on the verified exact candidate and evidence reconciliation. Checkpoint the working code for the maintainer to commit and review, and report exact test commands. Work only in assigned wtls-lab worktree; don't operate the VM or edit other repos.",
+  "paths": [
+    "src/lib.rs",
+    "src/udp.rs",
+    "src/udp/socket.rs",
+    "src/bin/wtls-udp-lab.rs",
+    "src/bin/wtls-udp-lab/wsp.rs",
+    "tests/udp_adapter.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "udp_adapter"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--bin",
+      "wtls-udp-lab"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "wire_resumption"
+    ]
+  ],
+  "timeoutSeconds": 900
+}

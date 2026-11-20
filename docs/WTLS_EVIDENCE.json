@@ -115,6 +115,13 @@
         "peerObservation": "Connection close preserved 7ae7417145b8ac4b. After Session close, the handset offered 7ae7417145b8ac4b and the server performed a full handshake with beba37cb32ed50c1.",
         "captureSha256": "4b1a4b97f6848f009632889890ee763b73f58c84cfc09756085ff8496d3734e7"
       }
+    },
+    {
+      "id": "WTLS-CL-UDP-ADAPTER-RETRY",
+      "workItem": "WTLS-208",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a, §§9.2.3.1, 10.2.1–10.2.2 and 10.3",
+      "statement": "A datagram transport preserves association routing and service data unit boundaries, and drives the protocol retry timer after lost delivery. With one server session context, Connection close allows an abbreviated reconnect and Session close causes a full reconnect when the peer offers its prior ID."
     }
   ]
 }

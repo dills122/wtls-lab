@@ -1,0 +1,34 @@
+{
+  "workItem": "WTLS-209",
+  "clauses": [
+    "WTLS-CL-PROTECTED-DATAGRAM-DELIVERY"
+  ],
+  "objective": "Implement WTLS-209 in standalone wtls-lab using deterministic integration tests for ordinary protected application datagram loss, duplication and reordering across key refresh. Start with tests through udp::Adapter and its existing test Link, using two authenticated Rust endpoints and valid records they emit. Pin the WAP-199 February 2000 baseline \u00a7\u00a79.2.3.1, 11.2.2 and Appendix B.3. Assert the relevant on-wire record sequence and negotiated refresh period, then deliver the first newer-key record before the last older-key record within the receiver window. Both should authenticate and be delivered once, in arrival order; repeat genuine datagrams as an ordinary UDP duplicate on both sides of the boundary and assert zero additional application deliveries. Also drop the first record in a refreshed block and verify a later record using the same block decrypts, no application retransmit/timer is created, and subsequent traffic still works. Exercise both receive directions where it is clear and economical. Use virtual monotonic time with no sleep, native historical peer or fault tooling; no malformed, attacker-controlled, or exploit inputs. Use existing helpers when possible. Run new tests against existing production code first, report which pass; if ordinary interoperability behavior fails, make the smallest spec-consistent fix, keep a regression and establish red/green. Leave production code alone if the tests already pass. Preserve caller behavior, the historical profile, and keep application ordering/reliability with its upper layer. Exclude counter exhaustion, unrelated protocol changes, new suites, dependencies, external traffic or Waves. Run focused tests and gates and report test names and any implementation changes. The lead owns evidence reconciliation and product design discussion; no roadmap or policy edits in the worker candidate. Work only in assigned wtls-lab worktree.",
+  "paths": [
+    "tests/udp_adapter.rs",
+    "tests/protected_echo.rs",
+    "src/udp.rs",
+    "src/wire.rs",
+    "src/wire/protection.rs",
+    "src/handshake.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "udp_adapter"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "protected_echo"
+    ]
+  ],
+  "timeoutSeconds": 720
+}

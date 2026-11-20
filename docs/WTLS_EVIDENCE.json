@@ -133,6 +133,13 @@
         "peerObservation": "BlackBerry resumed 9db23b7437c71aed after Connection close and reoffered it after Session close. The sample issued 1ec65ed3a1559f86 in a full handshake. Matching protected WSP page acknowledgments followed all three handshakes.",
         "captureSha256": "4b0992f01d7645924c7542b6acddea5067d14475fb0e8f7c745a727c8496c36d"
       }
+    },
+    {
+      "id": "WTLS-CL-PROTECTED-DATAGRAM-DELIVERY",
+      "workItem": "WTLS-209",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a, §§9.2.3.1, 11.2.2 and Appendix B.3",
+      "statement": "For the implemented authenticated datagram profile, select the protected record key block using the record's explicit sequence number. Ordinary loss or in-window out-of-order arrival across a key refresh allows later valid delivery. A repeated record is delivered at most once."
     }
   ]
 }

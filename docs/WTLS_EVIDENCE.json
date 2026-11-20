@@ -137,9 +137,20 @@
     {
       "id": "WTLS-CL-PROTECTED-DATAGRAM-DELIVERY",
       "workItem": "WTLS-209",
-      "status": "open",
-      "source": "WAP-199-WTLS-20000218-a, §§9.2.3.1, 11.2.2 and Appendix B.3",
-      "statement": "For the implemented authenticated datagram profile, select the protected record key block using the record's explicit sequence number. Ordinary loss or in-window out-of-order arrival across a key refresh allows later valid delivery. A repeated record is delivered at most once."
+      "status": "verified",
+      "source": "WAP-199-WTLS-20000218-a, §§9.2.3.1, 11.2 and Appendix B.3",
+      "statement": "For the implemented authenticated datagram profile, select the protected record key block using the record's explicit sequence number. Ordinary loss or in-window out-of-order arrival across a key refresh allows later valid delivery. A repeated record is delivered at most once.",
+      "evidence": {
+        "verifiedCommit": "14d08c52f5fb34e8cd850eb154199071af703571",
+        "claimId": "85933ff250dc43ca9c46b2e815293ae1",
+        "localReceipt": "ruflo-wtls-loop/85933ff250dc43ca9c46b2e815293ae1/receipt.json",
+        "tests": "tests/udp_adapter.rs",
+        "scenarios": [
+          "protected_udp_reordering_and_duplicates_across_key_refresh",
+          "protected_udp_loss_of_first_refreshed_record_does_not_block_delivery"
+        ],
+        "scope": "Exact Ruflo review and 93 Rust tests. The deterministic adapter tests use locally generated authenticated traffic to verify delivery across a refresh boundary under loss, duplication and reordering. Application retransmission remains an upper-layer responsibility. The existing production path passed these cases without a protocol change."
+      }
     }
   ]
 }

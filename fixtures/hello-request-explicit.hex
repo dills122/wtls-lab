@@ -1,0 +1,2 @@
+# Same record with an explicit three-byte fragment length.
+c3 00 00 00 03 00 00 00

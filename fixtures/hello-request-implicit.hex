@@ -1,0 +1,2 @@
+# One clear WTLS handshake record with sequence 0 and an empty HelloRequest message body.
+43 00 00 00 00 00

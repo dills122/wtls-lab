@@ -1,0 +1,6 @@
+# UDP payloads from winwap-delivery-experiments.pcap.
+# The relay observation uses elapsed time rounded to milliseconds from delivery-results.tsv.
+0 client datagram c3 00 00 00 77 01 00 74 01 6b 00 d3 a5 5c 7d 43 4d 50 17 ff f6 bb f5 d6 dd 00 00 4b 05 00 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 07 00 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 06 00 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 04 02 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 03 01 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 00 00 0e 06 03 06 02 06 01 05 03 05 02 05 01 00 03 01 00 02 10
+6000 server over-limit 313 300
+4991702 client datagram c3 00 00 00 77 01 00 74 01 6b 00 d3 a5 5c 7d 43 4d 50 17 ff f6 bb f5 d6 dd 00 00 4b 05 00 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 07 00 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 06 00 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 04 02 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 03 01 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 00 00 0e 06 03 06 02 06 01 05 03 05 02 05 01 00 03 01 00 02 10
+4997279 server datagram c2 00 03 00 06 03 0a 30 30 30 30

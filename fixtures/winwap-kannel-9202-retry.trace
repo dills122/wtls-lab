@@ -1,0 +1,6 @@
+# UDP payloads from winwap-delivery-experiments.pcap.
+# The relay observation uses elapsed time rounded to milliseconds from delivery-results.tsv.
+0 client datagram c3 00 00 00 77 01 00 74 01 6b 00 d3 62 16 2d 32 c6 c0 3d fc ea 42 1a e4 9f 00 00 4b 05 00 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 07 00 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 06 00 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 04 02 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 03 01 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 00 00 0e 06 03 06 02 06 01 05 03 05 02 05 01 00 03 01 00 02 10
+5000 server dropped 313
+5001253 client datagram c3 00 00 00 77 01 00 74 01 6b 00 d3 62 16 2d 32 c6 c0 3d fc ea 42 1a e4 9f 00 00 4b 05 00 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 07 00 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 06 00 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 04 02 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 03 01 02 0b 00 00 00 00 a5 b5 c5 d5 e5 00 00 00 00 0e 06 03 06 02 06 01 05 03 05 02 05 01 00 03 01 00 02 10
+5007186 server datagram c2 00 03 00 06 03 0a 30 30 30 30

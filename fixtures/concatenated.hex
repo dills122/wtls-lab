@@ -1,0 +1,4 @@
+# One SDU containing two explicitly sized record envelopes.
+# Framing sample only. The second fragment stands in for opaque ciphertext.
+c3 00 00 00 03 00 00 00
+e4 00 01 00 03 a1 b2 c3

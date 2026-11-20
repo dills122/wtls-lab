@@ -21,7 +21,10 @@ validation continues to use the caller-supplied wall clock.
   cached ID. Treat insertion collisions as errors or preserve the incumbent.
 - Install a fresh session only after the authenticated full Finished check.
   A Connection close leaves it available. Sending or accepting an
-  authenticated Session close invalidates it. A malformed or unverified
+  authenticated Session close invalidates it. A verified fatal alert in
+  the authenticated profile's committed receive epoch also invalidates
+  the exact session entry. A verified critical alert closes the connection
+  and preserves the entry. A malformed or unverified
   packet cannot evict an existing session. Use the cached credential only
   during its validity interval. The legacy anonymous server stays full-only.
 

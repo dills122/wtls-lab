@@ -101,9 +101,20 @@
     {
       "id": "WTLS-CL-PROTECTED-ALERT-LIFECYCLE",
       "workItem": "WTLS-207",
-      "status": "open",
+      "status": "verified",
       "source": "WAP-199-WTLS-20000218-a, §§10.1, 10.2–10.2.2 and Appendix B.4",
-      "statement": "A verified fatal alert terminates the connection and invalidates its session. A verified critical alert terminates the connection and may preserve the session. Connection close preserves the session, session close invalidates it, and a clear observation has no authority to invalidate an existing valid session."
+      "statement": "A verified fatal alert terminates the connection and invalidates its session. A verified critical alert terminates the connection and may preserve the session. Connection close preserves the session, session close invalidates it, and a clear observation has no authority to invalidate an existing valid session.",
+      "evidence": {
+        "verifiedCommit": "53ea3b107c0f8ee9ae8fac9acf28016cd1df26b5",
+        "claimId": "672a16cbc92b49319b863e49d7a685dd",
+        "localReceipt": "ruflo-wtls-loop/672a16cbc92b49319b863e49d7a685dd/receipt.json",
+        "tests": "src/wire/alert_tests.rs",
+        "provenance": "fixtures/HISTORICAL_PEERS.md",
+        "fixture": "fixtures/blackberry-7290-close-reconnect.trace",
+        "scope": "Exact Ruflo review and 82 deterministic Rust tests. Native peers tested generic alerts in committed and provisional receive epochs. The stock BlackBerry exercised protected Connection and Session close and verified post-close WSP traffic.",
+        "peerObservation": "Connection close preserved 7ae7417145b8ac4b. After Session close, the handset offered 7ae7417145b8ac4b and the server performed a full handshake with beba37cb32ed50c1.",
+        "captureSha256": "4b1a4b97f6848f009632889890ee763b73f58c84cfc09756085ff8496d3734e7"
+      }
     }
   ]
 }

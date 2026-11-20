@@ -80,7 +80,7 @@ The opt-in `ResumableServer` and `ResumableClient` contexts support abbreviated 
 
 Use `WirePeer::status()` while driving the handshake and `WirePeer::connection_info()` after establishment. It reports the WAP-199 negotiated identifiers and the verification performed on the remote identity from that endpoint. In this profile the client verifies the server certificate and the server has no authenticated client identity.
 
-The wire peer returns `WireError::PeerAlert` for a parsed clear alert during negotiation or an authenticated alert outside the supported control messages. Clear observations are unverified and leave the association state unchanged. Protected close notifications continue to produce `WireAction::Closed`.
+The wire peer returns `WireError::PeerAlert` for clear observations during negotiation and for valid peer alerts outside the supported close and commit acknowledgement paths. On the authenticated profile, a checksum-matched critical or fatal alert in the committed receive epoch also closes the association. Callers can inspect `status()` after the diagnostic. Critical preserves the cached session and fatal invalidates its exact cache entry. A clear observation leaves association and cache state intact. Protected close notifications continue to produce `WireAction::Closed` and their normal acknowledgements.
 
 Use `DatagramBudget::check` on a complete encoded `WireAction::Send` payload before sending it. The size error includes the encoded byte count and the transport's configured limit. Drivers own delivery observations and must supply them when available. WSP session establishment and origin retrieval are reported by their respective layers.
 

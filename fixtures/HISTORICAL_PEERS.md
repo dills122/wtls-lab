@@ -181,3 +181,27 @@ in the capture.
 ```sh
 cargo run --locked --bin wtls-inspect -- --timeline fixtures/blackberry-7290-resumed.trace
 ```
+
+
+## BlackBerry connection and session close
+
+The WTLS-207 run used the stock JDE 4.0 BlackBerry 7290 Browser in isolated
+XP against the authenticated Rust endpoint on UDP 9203. The operator matched
+the lab leaf's displayed SHA-1 thumbprint (`37dc033cc40977d03b8abd1b31cf665c23e09810`) before accepting
+it on each full handshake.
+
+1. The full handshake issued `7ae7417145b8ac4b` and completed a protected WSP
+   request and reply.
+2. The lab sent a protected Connection close. On refresh the client offered
+   `7ae7417145b8ac4b`, the server echoed the ID and committed first, and the protected
+   WSP exchange completed again.
+3. The lab sent a protected Session close on that resumed connection. The client reoffered `7ae7417145b8ac4b`. The gateway selected a new ID, `beba37cb32ed50c1`.
+   The certificate flight, both Finished messages, and the WSP reply followed
+   the full-handshake path.
+
+The [trace](blackberry-7290-close-reconnect.trace) contains 37 UDP payloads. Its SHA-256 is
+`35ddadd70deb89422ffc445416c6b71a605b85c2ef1e38f52165c74c728ac5e0`. The filtered PCAP SHA-256 is
+`4b1a4b97f6848f009632889890ee763b73f58c84cfc09756085ff8496d3734e7`. The endpoint log verifies the full, resumed, and full
+transitions and the protected WSP acknowledgements. Native wire tests
+exercise generic critical, fatal, warning, and unauthenticated alert
+handling. [WAP-199 §§10.2–10.2.2](https://www.wapforum.org/tech/documents/WAP-199-WTLS-20000218-a.pdf)

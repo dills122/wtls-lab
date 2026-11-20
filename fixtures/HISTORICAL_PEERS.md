@@ -127,10 +127,9 @@ leaf acceptance. Automatic CA-chain validation remains untested.
 | Reconnect ServerHello | Fresh ID `7877de87c4ade752` and a full certificate flight |
 | Reconnect result | The server verified the protected client Finished again. The BlackBerry acknowledged the protected WSP reply. |
 
-The lab wire server treats the cached offer as a cache miss. This proves
-the handset cached and reoffered the ID and can fall back to another full
-handshake. An abbreviated exchange still requires session caching in the wire
-server and a matching ServerHello ID. The test harness used a local, minimal
+WTLS-204 treated the cached offer as a cache miss. The handset reoffered
+the ID and fell back to another full handshake. WTLS-205 and WTLS-206
+below verify the abbreviated exchange. The test harness used a local, minimal
 WTP/WSP responder for the synthetic Connect and GET requests.
 [WAP-199 §§10.2.1, 10.5.1.2–10.5.1.3 and 10.5.9](https://www.wapforum.org/tech/documents/WAP-199-WTLS-20000218-a.pdf)
 
@@ -145,4 +144,40 @@ WSP transactions.
 
 ```sh
 cargo run --locked --bin wtls-inspect -- --timeline fixtures/blackberry-7290-authenticated.trace
+```
+
+
+## BlackBerry abbreviated handshake
+
+WTLS-205 added the authenticated wire cache. WTLS-206 retained the one-based
+RSA index on a resumed ServerHello when the client supplied that option.
+The BlackBerry 7290 initially stopped before sending Finished on a test that
+used the optional zero index. It completed an abbreviated exchange with its
+offered index (1). An offer with an empty key list still uses the allowed
+zero index. [WAP-199 §§10.3 and 10.5.1.3](https://www.wapforum.org/tech/documents/WAP-199-WTLS-20000218-a.pdf)
+
+The isolated XP guest used the stock RIM JDE 4.0 browser and the UDP 9203
+probe from WTLS-204. The gateway cache was set to 32 entries with a 15-minute
+lifetime. The handset first offered the previous listener's ID `90e1041ad9894d49`.
+The listener took the full-handshake path. The displayed
+thumbprint matched the newly generated lab WTLS leaf
+(`638d001c11a91e6243d49b812401ebe674519ba3`), which the operator explicitly accepted.
+
+| Trace event | Observation |
+| --- | --- |
+| 1–2 | The initial full server flight issued `a3ae109830b84aa6`. The server then verified the client Finished and exchanged protected WSP traffic. |
+| 12 | The lab sent a protected connection close, leaving the session eligible for reuse. |
+| 13–14 | On Browser refresh, both hellos carried `a3ae109830b84aa6` with fresh randoms. The server's datagram contained ServerHello, ChangeCipherSpec, and protected Finished. |
+| 15 | The client sent ChangeCipherSpec, protected Finished, and a protected WSP Connect. The server reported `Established(Resumed)` after verification. |
+| After event 15 | The server returned the local WML page in a protected WSP reply. The handset acknowledged the reply, and the page rendered without a second certificate prompt. |
+
+The resumed flight contained no certificate, ServerHelloDone, or RSA key
+exchange. The [trace](blackberry-7290-resumed.trace) contains all 20 UDP payloads from
+the two connections. The filtered PCAP SHA-256 is `6f8a16723e0fafbbc70953a797fbe8053714c6b401cfecdf93fa761cecd0031c`.
+The trace SHA-256 is `3b09d237e1158fd490d9427868fb564bc2b38dad2ac11e883d43b8f5b4818e19`. The endpoint log confirms the
+encrypted Finished verification and the WSP acknowledgement that are opaque
+in the capture.
+
+```sh
+cargo run --locked --bin wtls-inspect -- --timeline fixtures/blackberry-7290-resumed.trace
 ```

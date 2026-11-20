@@ -3,7 +3,7 @@
 WTLS-205 adds abbreviated handshake support to the existing authenticated RSA
 profile. An opt-in, long-lived server context owns a particular gateway
 identity and its cache. An opt-in client context is used for one gateway and
-owns that gateway's trust configuration and latest verified session. Datagram
+owns that gateway's trust configuration and latest verified session. `ResumableServer` and `ResumableClient` create a `WirePeer` through `peer(now)`, where `now` is the certificate wall clock in Unix seconds. Datagram
 adapters create a new wire peer for each connection and supply a shared
 monotonic millisecond clock for peers using the same context. Certificate
 validation continues to use the caller-supplied wall clock.
@@ -39,7 +39,18 @@ flight. A resumption-only offer without a usable cache entry receives a clear
 unknown_key_id alert. Until confirmed by authenticated server data or the
 duplicate-Finished alert, the resumed client prepends its original commit to
 application traffic. The server recognizes the validated exact commit prefix
-and processes trailing data under its existing replay window.
+and processes trailing data under its existing replay window. Either close
+scope carries the original commit while confirmation is pending so the
+server can validate it even if the standalone flight was lost. The server
+checks that the selected cache entry is still valid when accepting the commit.
+
+A protected close can reference a record that reached the peer before a
+long run of losses. Each connection retains checksums for its sent records,
+bounded by the non-wrapping sequence space. A retry reuses the existing
+record bytes and checksum.
+
+Use the one-based index of the selected RSA offer when present. An offer
+without a matching key entry uses the optional zero index on resumption.
 
 ## Verification
 

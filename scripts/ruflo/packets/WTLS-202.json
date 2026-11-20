@@ -1,0 +1,11 @@
+{
+  "workItem": "WTLS-202",
+  "clauses": ["WTLS-CL-CONNECTION-CLOSE-AND-SESSION-OFFER"],
+  "objective": "Build an opt-in --probe-session-cache mode for the existing --legacy-winwap loopback UDP 9202 lab binary. Leave default one-request behavior intact. For the first valid protected WSP GET, send the existing static reply with a WSP no-cache directive in probe mode to encourage a second network request, allow a brief bounded delivery interval, send a protected connection close via WirePeer::close(CloseScope::Connection), then start a completely fresh legacy WirePeer on the same socket for one more protected WSP GET. Keep session-close and abbreviated handshakes out of scope. Record for each numbered connection the clear ClientHello session ID (including empty and raw ID bytes, even if its suite is rejected) and selected ServerHello session ID, separate from WTLS establishment and WSP GET/reply. Permit the client to change source port between connections. Late protected traffic from the closed connection does not select a new peer. Use the existing local UDP timeout and terminate after the second protected reply or timeout. Keep reusable code in the lab binary, avoid adding dependencies or changing the core engine, and add focused unit tests for new argument/session observation behaviors and probe-only response framing as appropriate. Run cargo fmt --all and the packet checks before returning. Live XP capture and GUI operation are maintained separately. Do not claim that WinWAP will offer a cached ID.",
+  "paths": ["src/bin/wtls-winwap-lab.rs"],
+  "checks": [
+    ["cargo", "test", "--locked", "--offline", "--bin", "wtls-winwap-lab"],
+    ["cargo", "fmt", "--all", "--check"]
+  ],
+  "timeoutSeconds": 540
+}

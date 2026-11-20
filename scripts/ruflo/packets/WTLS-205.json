@@ -1,0 +1,47 @@
+{
+  "workItem": "WTLS-205",
+  "clauses": [
+    "WTLS-CL-WIRE-SESSION-RESUMPTION"
+  ],
+  "objective": "Implement docs/WIRE_SESSION_RESUMPTION.md in the authenticated wire adapter. Use the existing typed Handshake resumed states, not a second state machine. Public opt-in ResumableServer owns identity and bounded cache, with new(identity, capacity: NonZeroUsize, lifetime_ms: NonZeroU64) and peer(now: u32) -> Result<WirePeer, WireError> for the transport harness. ResumableClient scopes trust to one gateway and exposes similar peer creation. Preserve existing WirePeer constructors and WinWAP. A shared process-local monotonic millisecond basis comes from existing start/receive parameters. Keep zeroizing secrets private; keep credential validity ceilings; never extend TTL on resumed use. Choose cached parameters and fresh randoms before Finished, hash actual ClientHello and ServerHello, use the same cached master and fresh connection traffic, allow client to omit key/trust vectors for resumption-only remote offers, and emit appropriate clear unknown_key_id on such a miss. The native client may include full choices for fallback. Choose ServerHello key ID 0 for abbreviated as WAP-199 \u00a710.5.1.3 allows; receiving a matching cached ID must require the abbreviated flight. Keep same epoch's verified commit prefix bytes unchanged when prepending to new app records, accept only an exact validated prefix in open state, and preserve per-record sequence and replay behavior. Ensure session close invalidates only authenticated/locally closed current session, and failed unauthenticated traffic cannot invalidate a previously cached session. Test first at the wire boundary, then cover full->connection close->resume with the same ID and role order, wire bytes, fresh traffic keys, app confirmation and lost or duplicated commit, cache misses/expiry/eviction and session close, and existing certificate policy. Record remaining scope accurately. Do not reach outside this standalone repository/worktree. The lead owns the isolated BlackBerry test after implementation.",
+  "paths": [
+    "src/wire.rs",
+    "src/wire/codec.rs",
+    "src/wire/protection.rs",
+    "src/wire/session.rs",
+    "src/wire/certificate.rs",
+    "src/wire/report.rs",
+    "src/handshake.rs",
+    "tests/protected_echo.rs",
+    "tests/wire_resumption.rs",
+    "tests/inspector.rs",
+    "src/bin/wtls-inspect/timeline.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "wire_resumption"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "protected_echo"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "legacy_winwap"
+    ]
+  ],
+  "timeoutSeconds": 1180
+}

@@ -64,6 +64,13 @@
         "peerObservation": "Operator compared the displayed leaf thumbprint and accepted the lab certificate at the stock trust prompt for each full handshake. BlackBerry reoffered ac51a992d73be1a9 after protected connection closure. The server sent 7877de87c4ade752 and completed a second full handshake. Automatic CA trust and wire resumption remain open.",
         "captureSha256": "a51a62bfd4142de9605750a6c6adc020d194d65dfa482986ca25aee0249ceefa"
       }
+    },
+    {
+      "id": "WTLS-CL-WIRE-SESSION-RESUMPTION",
+      "workItem": "WTLS-205",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a, §§9.1, 10.2–10.5, 11.1.4–11.2",
+      "statement": "A matched session ID allows a server-first abbreviated Finished exchange under the cached master secret. Fresh hello randoms produce connection-local keys and current record epochs. Protected connection close preserves a cacheable session while protected session close invalidates it."
     }
   ]
 }

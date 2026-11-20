@@ -68,9 +68,24 @@
     {
       "id": "WTLS-CL-WIRE-SESSION-RESUMPTION",
       "workItem": "WTLS-205",
-      "status": "open",
+      "status": "verified",
       "source": "WAP-199-WTLS-20000218-a, §§9.1, 10.2–10.5, 11.1.4–11.2",
-      "statement": "A matched session ID allows a server-first abbreviated Finished exchange under the cached master secret. Fresh hello randoms produce connection-local keys and current record epochs. Protected connection close preserves a cacheable session while protected session close invalidates it."
+      "statement": "A matched session ID allows a server-first abbreviated Finished exchange under the cached master secret. Fresh hello randoms produce connection-local keys and current record epochs. Protected connection close preserves a cacheable session while protected session close invalidates it.",
+      "evidence": {
+        "verifiedCommit": "50ac92e523914b09bcd8e585c4f5779245bab7f8",
+        "claimId": "50de1d8f392e4a86a4f6b6a6dbaff8f4",
+        "localReceipt": "ruflo-wtls-loop/50de1d8f392e4a86a4f6b6a6dbaff8f4/receipt.json",
+        "tests": "tests/wire_resumption.rs",
+        "design": "docs/WIRE_SESSION_RESUMPTION.md",
+        "scope": "Authenticated cache and abbreviated wire exchange, verified with deterministic native peers. WTLS-206 tracks the BlackBerry key-index observation."
+      }
+    },
+    {
+      "id": "WTLS-CL-RESUMED-KEY-INDEX",
+      "workItem": "WTLS-206",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a, §§10.3 and 10.5.1.3",
+      "statement": "An abbreviated ServerHello may use zero for the ignored key field. If there is a matching offered key exchange, the server can return its one-based index. The echoed session ID and server-first Finished flight still identify resumption."
     }
   ]
 }

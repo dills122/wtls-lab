@@ -1,0 +1,30 @@
+{
+  "workItem": "WTLS-206",
+  "clauses": [
+    "WTLS-CL-RESUMED-KEY-INDEX"
+  ],
+  "objective": "Apply the live BlackBerry 7290 result to authenticated abbreviated ServerHello selection. An isolated test of WTLS-205 with the optional zero ServerHello key index exchanged matching IDs but the BlackBerry did not send Finished. A comparison with the offered one-based RSA index completed verified resumed Finished and protected WSP. Under WAP-199 \u00a7\u00a710.3 and 10.5.1.3, when resuming, return the actual one-based index of the cached suite if the peer offered a compatible key-exchange entry. Keep the allowed zero index when the key exchange choice is absent or its index cannot be represented. A matching ID and the abbreviated flight still determine resumed status. The live-tested implementation is offer.select_key_exchange(parameters).unwrap_or(0) after the existing abbreviated record-choice check. Preserve existing validation and hashing of actual hello bytes, and make no cache or cipher policy changes. Change only the listed paths. Use test-first evidence for the offerful resume and keep the successful keyless resume test, including the zero index for that case. The lead owns the final isolated 7290 rerun.",
+  "paths": [
+    "src/wire/codec.rs",
+    "tests/wire_resumption.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "wire_resumption"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "protected_echo"
+    ]
+  ],
+  "timeoutSeconds": 420
+}

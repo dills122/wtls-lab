@@ -18,7 +18,7 @@ cargo run --locked --bin wtls-inspect -- fixtures/kannel-handshake-failure.hex
 cargo run --locked --bin wtls-inspect -- fixtures/winwap-client-hello.hex
 ```
 
-The library exposes `decode_record_envelope`, `wire::decode_client_hello` and `wire::decode_server_hello`. The wire peer uses the same framing and Hello parsers through `decode_datagram` and `wire::decode_handshake`, which enforce explicit sequencing and the authenticated RSA profile.
+The library exposes `decode_record_envelope`, `wire::decode_client_hello` and `wire::decode_server_hello`. The wire peer enforces explicit sequencing through `decode_datagram`. The server uses `wire::decode_client_hello` for offer selection. `wire::decode_handshake` reads messages encoded for the fixed lab profile.
 
 ## Handshake timeline
 
@@ -28,7 +28,7 @@ cargo run --locked --bin wtls-inspect -- --timeline fixtures/winwap-kannel-9202-
 cargo run --locked --bin wtls-inspect -- --timeline fixtures/winwap-kannel-9203-retry.trace
 ```
 
-Each trace follows one association in chronological order. The input contains UDP payloads and optional relay observations as text. Time is in microseconds from the start of the trace. Sizes count UDP payload bytes.
+Each trace follows an endpoint pair in chronological order and can include a reconnect. The input contains UDP payloads and optional relay observations as text. Time is in microseconds from the start of the trace. Sizes count UDP payload bytes.
 
 ```text
 <elapsed-us> <client|server> datagram <space-separated hex bytes>
@@ -64,7 +64,7 @@ The flight and closure rules come from WAP-199 §§7, 9.2.3.1 and 10.1–10.5.9.
 
 ## Protected in-memory echo
 
-The `wire::WirePeer` adapter drives the handshake state machines with actual WAP-199 record bytes. It selects **RSA / 3DES-CBC-EDE / SHA** (Appendix A values 8, 6, and 3), null compression, explicit sequencing, and an eight-record key refresh interval. The client verifies a native WTLS RSA leaf against one provisioned RSA authority, the configured exact WTLS subject identity, and the supplied certificate-validation time. The full handshake transports a random RSA secret, derives both directional keys, and authenticates the encoded handshake transcript. Each ChangeCipherSpec switches its direction and resets the record sequence so the protected Finished starts at zero. Retries reuse the recorded wire bytes.
+The `wire::WirePeer` adapter drives the handshake state machines with actual WAP-199 record bytes. It selects **RSA / 3DES-CBC-EDE / SHA** (Appendix A values 8, 6, and 3), null compression, explicit sequencing, and a key refresh interval of at most eight records. The server selects the implemented algorithms from the client's lists and uses the smaller refresh value. The Finished calculation uses the original ClientHello bytes and the actual ServerHello selection. The client verifies a native WTLS RSA leaf against one provisioned RSA authority, the configured exact WTLS subject identity, and the supplied certificate-validation time. The full handshake transports a random RSA secret, derives both directional keys, and authenticates the encoded handshake transcript. Each ChangeCipherSpec switches its direction and resets the record sequence so the protected Finished starts at zero. Retries reuse the recorded wire bytes.
 
 Build with the OpenSSL development libraries and pkg-config. The lab server uses OpenSSL 3.2 or later with the default provider for RSA decryption. The `cargo test --offline` examples assume the locked dependencies are already in Cargo's cache. Run `cargo test --locked` to resolve the workspace on a fresh machine. [OpenSSL EVP decryption](https://docs.openssl.org/3.6/man3/EVP_PKEY_decrypt/)
 
@@ -74,7 +74,7 @@ cargo test --locked --test protected_echo
 
 The echo tests exchange only in-memory datagrams and generate their own lab RSA keys. They check certificate identity, Finished flight framing, loss recovery, authenticated data in both directions, refresh, and authenticated closure. A separate fixed vector checks the RSA premaster composition and bytes on each side of the refresh boundary. The RSA premaster appends the WAP-199 `RSAPublicKey` encoding (the length-prefixed exponent and modulus), also seen in the Kannel 1.4.5 anonymous-RSA implementation. That source is a cross-check of the byte order. The echo itself uses server authentication.
 
-This wire adapter covers the selected full-handshake profile. Abbreviated handshakes remain exercised by the typed state-machine tests. The [BlackBerry 7290 capture](fixtures/HISTORICAL_PEERS.md) exercises independent ClientHello inspection. Completing an authenticated exchange with that peer requires support for its offer shape and a live certificate trust check. The legacy record protection is intended for isolated lab use. [WAP-199 §§8.7, 9.2.3, 10–11, and Appendix A](https://www.openmobilealliance.org/tech/affiliates/wap/Technical_June2000-20021106%5B1%5D.zip) · [Kannel 1.4.5 source release](https://www.kannel.org/download/1.4.5/)
+This wire adapter covers the selected full-handshake profile. Abbreviated handshakes remain exercised by the typed state-machine tests. The [BlackBerry 7290 run](fixtures/HISTORICAL_PEERS.md#blackberry-authenticated-exchange-and-cached-id) completed two full handshakes with explicit acceptance of the lab certificate, exchanged protected WSP traffic, and reoffered a cached session ID after a protected connection close. The legacy record protection is intended for isolated lab use. [WAP-199 §§8.7, 9.2.3, 10–11, and Appendix A](https://www.openmobilealliance.org/tech/affiliates/wap/Technical_June2000-20021106%5B1%5D.zip) · [Kannel 1.4.5 source release](https://www.kannel.org/download/1.4.5/)
 
 ## Connection reporting for adapters
 

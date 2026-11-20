@@ -81,8 +81,7 @@ profile error and stayed idle.
   RSA and empty trusted-key check. The preferred RSA entry also carries a
   binary identifier, and the client offered multiple cipher/MAC pairs. The
   server produced no ServerHello and issued no session ID. Certificate
-  acceptance, protected traffic, a cached-ID offer, and abbreviated resumption
-  remain open.
+  acceptance, protected traffic, and a cached-ID offer were tested in WTLS-204 below.
 
 WAP-199 §10.5.1.3 allows the server to select the offered RSA entry by its
 one-based index, select the offered cipher/MAC pair, and choose a key refresh
@@ -99,3 +98,51 @@ The filtered capture `blackberry-7290-9203.pcap` started at
 The staged Openwave 7.0.107 installer reached a separate export-eligibility
 screen in XP. That run ended before acceptance. The Openwave 6.2.2 installer
 remains staged for a later test.
+
+
+## BlackBerry authenticated exchange and cached ID
+
+WTLS-204 used the same stock JDE 4.0 BlackBerry 7290 Browser in isolated XP
+and sent the same local probe to UDP 9203. The Rust endpoint selected the
+first offered key exchange, unrestricted RSA (8), and 3DES-CBC-EDE (6) with
+full HMAC-SHA-1 (3), null compression, explicit sequencing, and key refresh
+3 from the client's offer of 5. The server included the generated native WTLS
+leaf for `10.0.2.2` in both full handshakes.
+
+The simulator's **Prompt For Server Trust** setting was set to **Yes**. Its
+certificate viewer reported an untrusted chain. The displayed SHA-1
+thumbprint `1ca5c481213a543b633bdc295f9cdb2cef0d667f` matched the temporary
+lab leaf and the certificate bytes sent in both server flights. The operator
+chose to continue each time after that comparison. This test used explicit
+leaf acceptance. Automatic CA-chain validation remains untested.
+[RIM 7290 user guide, WAP Browser security options](https://www.att.com/support_static_files/manuals/BlackBerry_7290.pdf)
+
+| Event | Observed ID or result |
+| --- | --- |
+| First ClientHello | Empty session ID |
+| First ServerHello | `ac51a992d73be1a9` |
+| First established connection | The server verified the protected client Finished. The BlackBerry acknowledged the protected WSP reply and rendered the local WML page. |
+| Connection close | The lab sent a protected `connection_close_notify` and the Browser was refreshed. |
+| Reconnect ClientHello | `ac51a992d73be1a9`, exactly the first ServerHello's ID |
+| Reconnect ServerHello | Fresh ID `7877de87c4ade752` and a full certificate flight |
+| Reconnect result | The server verified the protected client Finished again. The BlackBerry acknowledged the protected WSP reply. |
+
+The lab wire server treats the cached offer as a cache miss. This proves
+the handset cached and reoffered the ID and can fall back to another full
+handshake. An abbreviated exchange still requires session caching in the wire
+server and a matching ServerHello ID. The test harness used a local, minimal
+WTP/WSP responder for the synthetic Connect and GET requests.
+[WAP-199 §§10.2.1, 10.5.1.2–10.5.1.3 and 10.5.9](https://www.wapforum.org/tech/documents/WAP-199-WTLS-20000218-a.pdf)
+
+The [trace](blackberry-7290-authenticated.trace) contains 22 UDP payloads
+from the same address pair across the two connections. Event 12 carries the
+protected close and event 13 the cached-ID offer. Capture began at
+2026-11-20 17:32:35 UTC. The UDP-filtered PCAP SHA-256 is
+`a51a62bfd4142de9605750a6c6adc020d194d65dfa482986ca25aee0249ceefa` and the timeline SHA-256 is
+`8bd740dcc1ddfb4864388a9db12d50139effce659bdc6fb590d2eeed782260ed`. The inspector displays the clear negotiation and protected
+record envelopes. The endpoint log records Finished verification and the
+WSP transactions.
+
+```sh
+cargo run --locked --bin wtls-inspect -- --timeline fixtures/blackberry-7290-authenticated.trace
+```

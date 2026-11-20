@@ -231,6 +231,14 @@ impl Handshake {
         )
     }
 
+    /// Let the wire server replace its pending session ID if an offer collides.
+    pub(crate) fn idle_server_session(&mut self) -> Option<&mut SessionId> {
+        match (&self.state, &mut self.config) {
+            (State::Idle, Config::Server { fresh_session, .. }) => Some(fresh_session),
+            _ => None,
+        }
+    }
+
     fn new(config: Config, cached_session: Option<SessionId>) -> Self {
         Self {
             config,

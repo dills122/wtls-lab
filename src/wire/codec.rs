@@ -76,25 +76,71 @@ const RSA_OFFER: KeyExchangeOffer<'static> = KeyExchangeOffer {
 };
 
 impl ClientHello<'_> {
-    /// Report the first reason this offer is outside the implemented wire profile.
+    /// Report the first reason the authenticated server cannot select this offer.
     pub fn profile_mismatch(&self) -> Option<&'static str> {
+        self.select_key_exchange(FIXED_PARAMETERS).err()
+    }
+
+    fn select_key_exchange(&self, parameters: NegotiatedParameters) -> Result<u8, &'static str> {
         if self.version != VERSION {
-            Some("WTLS version 1 required")
-        } else if !matches!(self.session_id.len(), 0 | 8) {
-            Some("session ID must be empty or eight bytes in this profile")
-        } else if !self.key_exchanges.iter().any(|key| key.suite == RSA) {
-            Some("no authenticated RSA key exchange offered")
-        } else if self.key_exchanges != [RSA_OFFER] || !self.trusted_keys.is_empty() {
-            Some("expected a single default RSA offer with a provisioned trust anchor")
-        } else if self.cipher_suites != [[TRIPLE_DES, SHA]] {
-            Some("expected a single 3DES-CBC-EDE and full HMAC-SHA-1 offer")
-        } else if self.compression != [0] {
-            Some("expected only null compression")
-        } else if self.sequence_mode != EXPLICIT_SEQUENCE || self.key_refresh != KEY_REFRESH {
-            Some("expected explicit sequence mode and key refresh value 3")
-        } else {
-            None
+            return Err("WTLS version 1 required");
         }
+        if self.sequence_mode != parameters.sequence_mode {
+            return Err("explicit sequence numbering required");
+        }
+        if !self
+            .cipher_suites
+            .contains(&[parameters.bulk_cipher, parameters.mac])
+        {
+            return Err("required cipher and MAC pair not offered");
+        }
+        if !self.compression.contains(&parameters.compression) {
+            return Err("null compression not offered");
+        }
+        // Client identifiers and advertised server trust hints are metadata.
+        let index = self
+            .key_exchanges
+            .iter()
+            .position(|key| key.suite == parameters.key_exchange && key.parameter_index == 0)
+            .ok_or("no compatible default-parameter key exchange offered")?;
+        u8::try_from(index + 1).map_err(|_| "selected key exchange index exceeds 255")
+    }
+}
+
+pub(super) struct ServerSelection {
+    pub(super) parameters: NegotiatedParameters,
+    pub(super) client_random: [u8; 16],
+    pub(super) offered_session: Option<SessionId>,
+    key_exchange_index: u8,
+    client_hello: Vec<u8>,
+}
+
+impl ServerSelection {
+    pub(super) fn select(
+        bytes: &[u8],
+        mut parameters: NegotiatedParameters,
+    ) -> Result<Self, WireError> {
+        let offer = decode_client_hello(bytes)?;
+        let key_exchange_index = offer
+            .select_key_exchange(parameters)
+            .map_err(|_| WireError::UnsupportedProfile)?;
+        parameters.key_refresh = offer.key_refresh.min(parameters.key_refresh);
+        Ok(Self {
+            parameters,
+            client_random: offer.random,
+            // Only an eight-byte offer can equal the server's generated ID.
+            offered_session: offer.session_id.try_into().ok().map(SessionId),
+            key_exchange_index,
+            client_hello: bytes.to_vec(),
+        })
+    }
+
+    pub(super) fn encode(&self, message: &Message) -> Result<Vec<u8>, WireError> {
+        if matches!(message, Message::ClientHello { .. }) {
+            // The peer hashes its original offer, including the old Session ID and unused choices.
+            return Ok(self.client_hello.clone());
+        }
+        encode_handshake_with_selection(message, self.parameters, self.key_exchange_index)
     }
 }
 
@@ -227,7 +273,7 @@ pub fn encode_handshake(message: &Message) -> Result<Vec<u8>, WireError> {
     encode_handshake_with_selection(message, FIXED_PARAMETERS, 1)
 }
 
-pub(super) fn encode_handshake_with_selection(
+fn encode_handshake_with_selection(
     message: &Message,
     parameters: NegotiatedParameters,
     key_exchange_index: u8,
@@ -296,14 +342,22 @@ pub(super) fn encode_handshake_with_selection(
     Ok(message)
 }
 
-/// Read one entire handshake fragment. Negotiation is restricted to the lab tuple.
+/// Read one entire handshake fragment encoded for the fixed lab profile.
 pub fn decode_handshake(bytes: &[u8]) -> Result<Message, WireError> {
     let (kind, mut body) = handshake_body(bytes)?;
 
     let decoded = match kind {
         1 => {
             let hello = parse_client_hello(body)?;
-            if hello.profile_mismatch().is_some() {
+            if hello.version != VERSION
+                || !matches!(hello.session_id.len(), 0 | 8)
+                || hello.key_exchanges != [RSA_OFFER]
+                || !hello.trusted_keys.is_empty()
+                || hello.cipher_suites != [[TRIPLE_DES, SHA]]
+                || hello.compression != [0]
+                || hello.sequence_mode != EXPLICIT_SEQUENCE
+                || hello.key_refresh != KEY_REFRESH
+            {
                 return Err(WireError::UnsupportedProfile);
             }
             let resume = hello.session_id.try_into().ok().map(SessionId);

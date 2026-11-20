@@ -1,14 +1,19 @@
 use std::num::NonZeroU64;
 use std::sync::OnceLock;
 
-use openssl::pkey::{Private, Public};
-use openssl::rsa::Rsa;
+use openssl::hash::MessageDigest;
+use openssl::pkey::{PKey, Private, Public};
+use openssl::rsa::{Padding, Rsa};
+use openssl::sha::sha1;
+use openssl::sign::Signer;
+use openssl::symm::{Cipher, Crypter, Mode};
 use wtls_lab::handshake::{CloseScope, HandshakeKind, Message, RetryPolicy, SessionId, Status};
 use wtls_lab::wire::{
-    ServerIdentity, TrustAnchor, WireAction, WireError, WirePeer, decode_handshake,
-    encode_handshake, issue_certificate,
+    PeerAuthentication, ServerIdentity, TrustAnchor, WireAction, WireError, WirePeer,
+    decode_client_hello, decode_handshake, decode_server_hello, encode_handshake,
+    issue_certificate,
 };
-use wtls_lab::{CipherSpec, RecordType, decode_datagram};
+use wtls_lab::{CipherSpec, LengthForm, Record, RecordType, decode_datagram, encode_datagram};
 
 const NOW: u32 = 1_730_000_000;
 const ISSUER: &str = "WTLS Lab CA; WTLS Lab; CA";
@@ -117,6 +122,298 @@ fn fixed_profile_client_hello_matches_the_spec_derived_bytes() {
 }
 
 #[test]
+fn authenticated_server_selects_from_the_captured_blackberry_hello() {
+    let (_, mut server) = peers(SUBJECT);
+    let captured = include_str!("../fixtures/blackberry-7290-client-hello.hex")
+        .lines()
+        .flat_map(|line| line.split('#').next().unwrap().split_whitespace())
+        .map(|byte| u8::from_str_radix(byte, 16).unwrap())
+        .collect::<Vec<_>>();
+    let records = decode_datagram(&captured).unwrap();
+    let offer = decode_client_hello(records[0].fragment).unwrap();
+    assert_eq!(offer.key_refresh, 5);
+    assert!(!offer.trusted_keys.is_empty());
+
+    let flight = send(&server.receive(&captured, 1).unwrap());
+    let records = decode_datagram(&flight).unwrap();
+    let selected = decode_server_hello(records[0].fragment).unwrap();
+    assert_eq!(selected.key_exchange_index, 1);
+    assert_eq!(selected.cipher_suite, [6, 3]);
+    assert_eq!(selected.compression, 0);
+    assert_eq!(selected.sequence_mode, 2);
+    assert_eq!(selected.key_refresh, 3);
+    assert_eq!(records.len(), 3);
+    assert!(matches!(
+        decode_handshake(records[1].fragment).unwrap(),
+        Message::Certificate(_)
+    ));
+    assert_eq!(
+        decode_handshake(records[2].fragment).unwrap(),
+        Message::ServerHelloDone
+    );
+    assert_eq!(
+        server.receive(&captured, 2).unwrap(),
+        [WireAction::Send(flight)]
+    );
+}
+
+fn handshake_fragment(kind: u8, body: &[u8]) -> Vec<u8> {
+    let mut bytes = vec![kind];
+    bytes.extend_from_slice(&u16::try_from(body.len()).unwrap().to_be_bytes());
+    bytes.extend_from_slice(body);
+    bytes
+}
+
+const NONCANONICAL_RANDOM: [u8; 16] = [0xa1; 16];
+const OFFERED_SESSION: &[u8; 8] = b"old-id!!";
+const NONCANONICAL_OFFER: &[u8] = &[
+    0, 9, 8, 1, 0, 8, 0, 2, 2, 0xaa,
+    0xbb, // RSA with index 1, then default RSA with a binary ID
+    0, 6, 8, 0, 2, 2, 0xcc, 0xdd, // An unrelated server trust hint
+    4, 5, 3, 6, 3, // DES/SHA, then 3DES/SHA
+    2, 1, 0, // Another compression method, then null
+    2, 1, // Explicit sequences, refresh every two records
+];
+
+fn offered_hello(session: &[u8], offer: &[u8]) -> Vec<u8> {
+    let mut body = vec![1];
+    body.extend_from_slice(&NONCANONICAL_RANDOM);
+    body.push(u8::try_from(session.len()).unwrap());
+    body.extend_from_slice(session);
+    body.extend_from_slice(offer);
+    handshake_fragment(1, &body)
+}
+
+fn clear_record(content_type: RecordType, sequence: u16, fragment: &[u8]) -> Record<'_> {
+    Record {
+        content_type,
+        cipher_spec: CipherSpec::Null,
+        sequence,
+        length_form: LengthForm::Explicit,
+        fragment,
+    }
+}
+
+fn hmac_sha1(key: &[u8], bytes: &[u8]) -> Vec<u8> {
+    let key = PKey::hmac(key).unwrap();
+    let mut signer = Signer::new(MessageDigest::sha1(), &key).unwrap();
+    signer.sign_oneshot_to_vec(bytes).unwrap()
+}
+
+// WAP-199 P_SHA-1 over the label and seed, with the seed already concatenated.
+fn expected_prf(key: &[u8], label: &[u8], seed: &[u8], length: usize) -> Vec<u8> {
+    let seed = [label, seed].concat();
+    let mut a = seed.clone();
+    let mut output = Vec::new();
+    while output.len() < length {
+        a = hmac_sha1(key, &a);
+        output.extend(hmac_sha1(key, &[a.as_slice(), &seed].concat()));
+    }
+    output.truncate(length);
+    output
+}
+
+fn expected_ciphertext(
+    record: Record<'_>,
+    master: &[u8],
+    label: &[u8],
+    server_random: &[u8; 16],
+    epoch_start: u16,
+) -> Vec<u8> {
+    let sequence = record.sequence.to_be_bytes();
+    let seed = [
+        &epoch_start.to_be_bytes()[..],
+        server_random,
+        &NONCANONICAL_RANDOM,
+    ]
+    .concat();
+    let keys = expected_prf(master, label, &seed, 52);
+    let plaintext = record.fragment;
+    let mac_input = [
+        &sequence[..],
+        &[record.header_byte()],
+        &(plaintext.len() as u16).to_be_bytes(),
+        plaintext,
+    ]
+    .concat();
+    let mut padded = [plaintext, &hmac_sha1(&keys[..20], &mac_input)].concat();
+    let padding = 8 - padded.len() % 8;
+    padded.resize(padded.len() + padding, (padding - 1) as u8);
+    let iv = std::array::from_fn::<_, 8, _>(|i| keys[44 + i] ^ sequence[i % 2]);
+    let mut cipher = Crypter::new(
+        Cipher::des_ede3_cbc(),
+        Mode::Encrypt,
+        &keys[20..44],
+        Some(&iv),
+    )
+    .unwrap();
+    cipher.pad(false);
+    let mut encrypted = vec![0; padded.len() + 8];
+    let len = cipher.update(&padded, &mut encrypted).unwrap();
+    let tail = cipher.finalize(&mut encrypted[len..]).unwrap();
+    encrypted.truncate(len + tail);
+    encrypted
+}
+
+#[test]
+fn noncanonical_authenticated_exchange_uses_the_wire_transcript_and_selected_refresh() {
+    let (_, mut server) = peers(SUBJECT);
+    let client_hello = offered_hello(OFFERED_SESSION, NONCANONICAL_OFFER);
+    let hello = encode_datagram(&[clear_record(RecordType::Handshake, 0, &client_hello)]).unwrap();
+    let flight = send(&server.receive(&hello, 1).unwrap());
+    assert_eq!(
+        server.receive(&hello, 2).unwrap(),
+        [WireAction::Send(flight.clone())]
+    );
+    let records = decode_datagram(&flight).unwrap();
+    let [server_hello, certificate, done] = records.as_slice() else {
+        panic!("expected a full authenticated server flight");
+    };
+    let selected = decode_server_hello(server_hello.fragment).unwrap();
+    assert_eq!(selected.key_exchange_index, 2);
+    assert_eq!(selected.key_refresh, 1);
+    assert_eq!(selected.session_id.len(), 8);
+    assert_ne!(selected.session_id, OFFERED_SESSION);
+
+    let key = &keys().1;
+    let secret = [1u8; 20];
+    let mut encrypted = vec![0; key.size() as usize];
+    let len = key
+        .public_encrypt(&secret, &mut encrypted, Padding::PKCS1)
+        .unwrap();
+    encrypted.truncate(len);
+    let mut premaster = secret.to_vec();
+    for component in [key.e(), key.n()] {
+        let bytes = component.to_vec();
+        premaster.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+        premaster.extend(bytes);
+    }
+    let master = expected_prf(
+        &premaster,
+        b"master secret",
+        &[NONCANONICAL_RANDOM, selected.random].concat(),
+        20,
+    );
+    let exchange = encode_handshake(&Message::ClientKeyExchange(encrypted)).unwrap();
+    let mut transcript = [
+        client_hello.as_slice(),
+        server_hello.fragment,
+        certificate.fragment,
+        done.fragment,
+        &exchange,
+    ]
+    .concat();
+    let client_finished = handshake_fragment(
+        20,
+        &expected_prf(&master, b"client finished", &sha1(&transcript), 12),
+    );
+    let mut protected = Record {
+        cipher_spec: CipherSpec::Current,
+        ..clear_record(RecordType::Handshake, 0, &client_finished)
+    };
+    let ciphertext =
+        expected_ciphertext(protected, &master, b"client expansion", &selected.random, 0);
+    protected.fragment = &ciphertext;
+    let commit = encode_datagram(&[
+        clear_record(RecordType::Handshake, 1, &exchange),
+        clear_record(RecordType::ChangeCipherSpec, 2, &[1]),
+        protected,
+    ])
+    .unwrap();
+
+    let actions = server.receive(&commit, 3).unwrap();
+    assert!(actions.contains(&WireAction::Established(HandshakeKind::Full)));
+    let final_flight = send(&actions);
+    let records = decode_datagram(&final_flight).unwrap();
+    assert_eq!(records.len(), 2);
+    assert_eq!(records[0].content_type, RecordType::ChangeCipherSpec);
+    transcript.extend_from_slice(&client_finished);
+    let server_finished = handshake_fragment(
+        20,
+        &expected_prf(&master, b"server finished", &sha1(&transcript), 12),
+    );
+    assert_eq!(
+        records[1].fragment,
+        expected_ciphertext(
+            Record {
+                fragment: &server_finished,
+                ..records[1]
+            },
+            &master,
+            b"server expansion",
+            &selected.random,
+            0,
+        )
+    );
+    assert_eq!(
+        server.receive(&commit, 4).unwrap(),
+        [WireAction::Send(final_flight)]
+    );
+    let info = server.connection_info().unwrap();
+    assert_eq!(info.parameters.key_refresh, 1);
+    assert_eq!(info.peer_authentication, PeerAuthentication::None);
+
+    let mut application = Record {
+        cipher_spec: CipherSpec::Current,
+        ..clear_record(RecordType::ApplicationData, 2, b"new epoch")
+    };
+    let ciphertext = expected_ciphertext(
+        application,
+        &master,
+        b"client expansion",
+        &selected.random,
+        2,
+    );
+    application.fragment = &ciphertext;
+    let datagram = encode_datagram(&[application]).unwrap();
+    assert_eq!(
+        server.receive(&datagram, 5).unwrap(),
+        [WireAction::Deliver(b"new epoch".to_vec())]
+    );
+}
+
+#[test]
+fn authenticated_server_rejects_offers_without_a_required_choice() {
+    let (_, mut server) = peers(SUBJECT);
+    for (index, value) in [
+        (6, 255), // Malformed explicit RSA parameters
+        (6, 1),   // Neither RSA offer specifies default parameters
+        (5, 5),   // No unrestricted RSA with default parameters
+        (22, 5),  // No 3DES
+        (23, 2),  // No full SHA with 3DES
+        (26, 1),  // No null compression
+        (27, 1),  // No explicit sequence numbering
+    ] {
+        let mut offer = NONCANONICAL_OFFER.to_vec();
+        offer[index] = value;
+        let fragment = offered_hello(OFFERED_SESSION, &offer);
+        let hello = encode_datagram(&[clear_record(RecordType::Handshake, 0, &fragment)]).unwrap();
+        let expected = if value == 255 {
+            WireError::InvalidMessage
+        } else {
+            WireError::UnsupportedProfile
+        };
+        assert_eq!(
+            server.receive(&hello, 1),
+            Err(expected),
+            "offer byte {index}"
+        );
+        assert_eq!(server.status(), Status::Idle);
+    }
+    let valid = offered_hello(b"old", NONCANONICAL_OFFER);
+    let hello = encode_datagram(&[clear_record(RecordType::Handshake, 0, &valid)]).unwrap();
+    let flight = send(&server.receive(&hello, 2).unwrap());
+    let records = decode_datagram(&flight).unwrap();
+    assert_eq!(
+        decode_server_hello(records[0].fragment)
+            .unwrap()
+            .session_id
+            .len(),
+        8
+    );
+}
+
+#[test]
 fn handshake_codec_preserves_the_session_id_and_finished_bytes() {
     for message in [
         Message::ServerHello {
@@ -186,8 +483,6 @@ fn mismatched_certificate_identity_cannot_open_the_wire_handshake() {
 
 #[test]
 fn unprotected_application_data_is_rejected_after_the_handshake() {
-    use wtls_lab::{LengthForm, Record, encode_datagram};
-
     let (mut client, mut server) = peers(SUBJECT);
     establish(&mut client, &mut server);
     let clear_datagram = encode_datagram(&[Record {
@@ -230,8 +525,6 @@ fn ciphertext_integrity_failure_releases_no_application_data() {
 
 #[test]
 fn connection_reports_the_negotiated_profile_and_each_peers_authentication() {
-    use wtls_lab::wire::PeerAuthentication;
-
     let (mut client, mut server) = peers(SUBJECT);
     assert!(client.connection_info().is_none());
     assert!(server.connection_info().is_none());

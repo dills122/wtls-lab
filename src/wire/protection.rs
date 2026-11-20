@@ -9,8 +9,8 @@ use openssl::symm::{Cipher, Crypter, Mode};
 use zeroize::Zeroizing;
 
 use super::certificate::write_rsa_key;
-use super::codec::{FIXED_PARAMETERS, VERSION, encode_handshake};
-use super::legacy::{DES_CBC, LegacySelection};
+use super::codec::{FIXED_PARAMETERS, ServerSelection, VERSION, encode_handshake};
+use super::legacy::DES_CBC;
 use super::{NegotiatedParameters, WireError};
 use crate::Record;
 use crate::handshake::{FinishedData, FinishedProvider, Message, Role};
@@ -83,7 +83,7 @@ impl Traffic {
         key: &Rsa<Private>,
         client_random: [u8; 16],
         server_random: [u8; 16],
-        parameters: Option<NegotiatedParameters>,
+        parameters: NegotiatedParameters,
     ) -> Result<Self, WireError> {
         let pkey = PKey::from_rsa(key.clone())?;
         let mut decrypt = Decrypter::new(&pkey)?;
@@ -99,24 +99,18 @@ impl Traffic {
         {
             secret.copy_from_slice(&decrypted[..20]);
         }
-        Self::from_secret(
-            &secret[..],
-            key,
-            client_random,
-            server_random,
-            parameters.unwrap_or(FIXED_PARAMETERS),
-        )
+        Self::from_secret(&secret[..], key, client_random, server_random, parameters)
     }
 
     fn finished(
         &self,
         sender: Role,
         transcript: &[Message],
-        legacy: Option<&LegacySelection>,
+        selection: Option<&ServerSelection>,
     ) -> Result<FinishedData, WireError> {
         let mut hash = Hasher::new(MessageDigest::sha1())?;
         for message in transcript {
-            let bytes = match legacy {
+            let bytes = match selection {
                 Some(selection) => selection.encode(message)?,
                 None => encode_handshake(message)?,
             };
@@ -210,7 +204,7 @@ impl Traffic {
     }
 }
 
-pub(super) struct WireFinished<'a>(pub Option<&'a Traffic>, pub Option<&'a LegacySelection>);
+pub(super) struct WireFinished<'a>(pub Option<&'a Traffic>, pub Option<&'a ServerSelection>);
 
 impl FinishedProvider for WireFinished<'_> {
     fn create(&self, sender: Role, transcript: &[Message]) -> Option<FinishedData> {

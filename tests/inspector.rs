@@ -67,7 +67,22 @@ fn inspector_reports_winwap_offers_in_order_even_when_the_profile_rejects_them()
         "key-exchanges=rsa-anon(5),rsa-anon-768(7),rsa-anon-512(6),dh-anon-768(4),dh-anon-512(3)"
     ));
     assert!(output.contains("cipher-suites=3des-cbc-ede(6)/sha-160(3),3des-cbc-ede(6)/sha-80(2),3des-cbc-ede(6)/sha-40(1),des-cbc(5)/sha-160(3),des-cbc(5)/sha-80(2),des-cbc(5)/sha-40(1),null(0)/sha-160(3)"));
-    assert!(output.contains("profile=reject reason=no authenticated RSA key exchange offered"));
+    assert!(
+        output
+            .contains("profile=reject reason=no compatible default-parameter key exchange offered")
+    );
+}
+
+#[test]
+fn inspector_reports_the_blackberry_offer_without_rejecting_the_authenticated_profile() {
+    let output = inspect("blackberry-7290-client-hello.hex");
+    assert!(
+        output.contains("client-hello version=1 session-id-length=0 sequence-mode=2 key-refresh=5")
+    );
+    assert!(output.contains("key-exchanges=rsa(8),"));
+    assert!(output.contains("  key[1] parameter-index=0 identifier=binary:"));
+    assert!(output.contains("  trusted-key[1] parameter-index=0 identifier=sha1:"));
+    assert!(!output.contains("profile=reject"));
 }
 
 #[test]

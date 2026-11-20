@@ -29,8 +29,8 @@ pub use report::{
     PeerAuthentication,
 };
 
-use codec::{FIXED_PARAMETERS, decode_legacy_client_key_exchange, encode_alert};
-use legacy::LegacySelection;
+use codec::{FIXED_PARAMETERS, ServerSelection, decode_legacy_client_key_exchange, encode_alert};
+use legacy::WINWAP_PARAMETERS;
 use protection::{MAX_PLAINTEXT, Traffic, WireFinished};
 
 use crate::handshake::{
@@ -108,15 +108,9 @@ pub enum WireAction {
 }
 
 enum Side {
-    Client {
-        trust: TrustAnchor,
-        now: u32,
-    },
+    Client { trust: TrustAnchor, now: u32 },
     Server(Rsa<Private>),
-    LegacyServer {
-        key: Rsa<Private>,
-        initial_session: SessionId,
-    },
+    LegacyServer(Rsa<Private>),
 }
 
 #[derive(Clone, Copy, Default)]
@@ -148,7 +142,7 @@ struct Incoming {
     read: Direction,
     traffic: Option<Traffic>,
     checksum: [u8; 4],
-    legacy: Option<LegacySelection>,
+    selection: Option<ServerSelection>,
 }
 
 /// A full-handshake-only association driven by one in-memory datagram at a time.
@@ -165,7 +159,7 @@ pub struct WirePeer {
     sent_flights: Vec<Flight>,
     sent_checksums: VecDeque<[u8; 4]>,
     last_received: [u8; 4],
-    legacy: Option<LegacySelection>,
+    selection: Option<ServerSelection>,
 }
 
 impl WirePeer {
@@ -193,14 +187,7 @@ impl WirePeer {
         let (random, session) = server_parameters(now)?;
         let key = Rsa::generate(2048)?;
         let handshake = legacy_server_handshake(&key, session, random)?;
-        Ok(Self::new(
-            Side::LegacyServer {
-                key,
-                initial_session: session,
-            },
-            handshake,
-            Some(random),
-        ))
+        Ok(Self::new(Side::LegacyServer(key), handshake, Some(random)))
     }
 
     fn new(side: Side, handshake: Handshake, random: Option<[u8; 16]>) -> Self {
@@ -216,7 +203,7 @@ impl WirePeer {
             sent_flights: Vec::new(),
             sent_checksums: VecDeque::new(),
             last_received: [0; 4],
-            legacy: None,
+            selection: None,
         }
     }
 
@@ -228,12 +215,12 @@ impl WirePeer {
     pub fn connection_info(&self) -> Option<ConnectionInfo> {
         (self.status() == Status::Open).then_some(ConnectionInfo {
             parameters: self
-                .legacy
+                .selection
                 .as_ref()
-                .map_or(FIXED_PARAMETERS, |legacy| legacy.parameters),
+                .map_or(FIXED_PARAMETERS, |selection| selection.parameters),
             peer_authentication: match self.side {
                 Side::Client { .. } => PeerAuthentication::VerifiedServerCertificate,
-                Side::Server(_) | Side::LegacyServer { .. } => PeerAuthentication::None,
+                Side::Server(_) | Side::LegacyServer(_) => PeerAuthentication::None,
             },
         })
     }
@@ -289,7 +276,7 @@ impl WirePeer {
             let actions = self.handshake.receive(
                 &flight.messages,
                 monotonic_ms,
-                &WireFinished(self.traffic.as_ref(), self.legacy.as_ref()),
+                &WireFinished(self.traffic.as_ref(), self.selection.as_ref()),
             )?;
             return self.apply(actions);
         }
@@ -322,28 +309,26 @@ impl WirePeer {
 
         let context = WireFinished(
             incoming.traffic.as_ref().or(self.traffic.as_ref()),
-            self.legacy.as_ref(),
+            self.selection.as_ref(),
         );
-        let mut replacement = None;
-        if let Side::LegacyServer {
-            key,
-            initial_session,
-        } = &self.side
-            && let Some(selection) = &incoming.legacy
-            && selection.offered_session == Some(*initial_session)
+        if let [Message::ClientHello { .. }] = incoming.messages.as_slice()
+            && let Some(offered_id) = incoming
+                .selection
+                .as_ref()
+                .and_then(|offer| offer.offered_session)
+            && let Some(fresh_session) = self.handshake.idle_server_session()
+            && *fresh_session == offered_id
         {
-            let mut fresh = initial_session.0;
-            while fresh == initial_session.0 {
+            let mut fresh = offered_id.0;
+            while fresh == offered_id.0 {
                 rand_bytes(&mut fresh)?;
             }
-            let random = self.random.ok_or(WireError::InvalidRecord)?;
-            replacement = Some(legacy_server_handshake(key, SessionId(fresh), random)?);
+            *fresh_session = SessionId(fresh);
         }
-        let actions = match replacement.as_mut().unwrap_or(&mut self.handshake).receive(
-            &incoming.messages,
-            monotonic_ms,
-            &context,
-        ) {
+        let actions = match self
+            .handshake
+            .receive(&incoming.messages, monotonic_ms, &context)
+        {
             Ok(actions) => actions,
             Err(error) => {
                 if self.status() == Status::Closed {
@@ -353,12 +338,9 @@ impl WirePeer {
             }
         };
 
-        if let Some(handshake) = replacement {
-            self.handshake = handshake;
-        }
         self.read = incoming.read;
-        if let Some(legacy) = incoming.legacy {
-            self.legacy = Some(legacy);
+        if let Some(selection) = incoming.selection {
+            self.selection = Some(selection);
         }
         if let Some(traffic) = incoming.traffic {
             self.traffic = Some(traffic);
@@ -386,7 +368,12 @@ impl WirePeer {
         let mut traffic = None;
         let mut messages = Vec::new();
         let mut awaiting_finished = false;
-        let mut legacy = None;
+        let mut selection = None;
+        let server_profile = match self.side {
+            Side::Server(_) => Some(FIXED_PARAMETERS),
+            Side::LegacyServer(_) => Some(WINWAP_PARAMETERS),
+            Side::Client { .. } => None,
+        };
 
         for record in records {
             let message = match (read.protected, record.cipher_spec) {
@@ -406,21 +393,21 @@ impl WirePeer {
                         awaiting_finished = true;
                         Message::ChangeCipherSpec
                     } else if record.content_type == RecordType::Handshake {
-                        let message = if matches!(self.side, Side::LegacyServer { .. })
-                            && record.fragment.first() == Some(&1)
+                        let message = if record.fragment.first() == Some(&1)
+                            && let Some(parameters) = server_profile
                         {
                             if self.status() != Status::Idle {
                                 return Err(WireError::InvalidRecord);
                             }
-                            let selection = LegacySelection::select(record.fragment)?;
-                            let random = selection.client_random;
-                            legacy = Some(selection);
+                            let selected = ServerSelection::select(record.fragment, parameters)?;
+                            let random = selected.client_random;
+                            selection = Some(selected);
                             // Every offered ID is a cache miss for this full-handshake profile.
                             Message::ClientHello {
                                 random,
                                 resume: None,
                             }
-                        } else if let Side::LegacyServer { key, .. } = &self.side
+                        } else if let Side::LegacyServer(key) = &self.side
                             && record.fragment.first() == Some(&16)
                         {
                             decode_legacy_client_key_exchange(record.fragment, key.size() as usize)?
@@ -436,7 +423,7 @@ impl WirePeer {
                             }
                             Message::ClientKeyExchange(exchange) => {
                                 let key = match &self.side {
-                                    Side::Server(key) | Side::LegacyServer { key, .. } => key,
+                                    Side::Server(key) | Side::LegacyServer(key) => key,
                                     Side::Client { .. } => return Err(WireError::InvalidRecord),
                                 };
                                 if !messages.is_empty() || self.traffic.is_some() {
@@ -444,12 +431,14 @@ impl WirePeer {
                                 }
                                 let local = self.random.ok_or(WireError::InvalidRecord)?;
                                 let remote = self.peer_random.ok_or(WireError::InvalidRecord)?;
+                                let selected =
+                                    self.selection.as_ref().ok_or(WireError::InvalidRecord)?;
                                 traffic = Some(Traffic::begin_server(
                                     exchange,
                                     key,
                                     remote,
                                     local,
-                                    self.legacy.as_ref().map(|selection| selection.parameters),
+                                    selected.parameters,
                                 )?);
                             }
                             _ => {}
@@ -491,7 +480,7 @@ impl WirePeer {
             read,
             traffic,
             checksum,
-            legacy,
+            selection,
         })
     }
 
@@ -568,8 +557,8 @@ impl WirePeer {
                 }
                 _ => (
                     RecordType::Handshake,
-                    match &self.legacy {
-                        Some(legacy) => legacy.encode(message)?,
+                    match &self.selection {
+                        Some(selection) => selection.encode(message)?,
                         None => encode_handshake(message)?,
                     },
                 ),
@@ -618,7 +607,7 @@ impl WirePeer {
     fn local_role(&self) -> Role {
         match self.side {
             Side::Client { .. } => Role::Client,
-            Side::Server(_) | Side::LegacyServer { .. } => Role::Server,
+            Side::Server(_) | Side::LegacyServer(_) => Role::Server,
         }
     }
 

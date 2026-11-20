@@ -10,6 +10,9 @@ mod protection;
 mod report;
 mod session;
 
+#[cfg(test)]
+mod alert_tests;
+
 use std::error::Error;
 use std::fmt;
 use std::ops::RangeInclusive;
@@ -45,7 +48,13 @@ use crate::handshake::{
     Action, Alert, CloseScope, Datagram, Handshake, HandshakeError, HandshakeKind, Message,
     RetryPolicy, Role, SessionId, Status,
 };
-use crate::{CipherSpec, DecodeError, EncodeError, LengthForm, Record, RecordType};
+use crate::{
+    CipherSpec, DecodeError, DecodeErrorKind, EncodeError, LengthForm, Record, RecordType,
+};
+
+const ALERT_WARNING: u8 = 1;
+const ALERT_CRITICAL: u8 = 2;
+const ALERT_FATAL: u8 = 3;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireError {
@@ -54,7 +63,7 @@ pub enum WireError {
     UnsupportedProfile,
     CertificateRejected,
     AuthenticationFailed,
-    /// An alert that was observed but is not handled by the active engine profile.
+    /// A peer alert reported outside the close and commit acknowledgment paths.
     PeerAlert {
         fields: AlertFields,
         protection: AlertProtection,
@@ -319,7 +328,24 @@ impl WirePeer {
             return self.apply(actions);
         }
 
-        let mut incoming = self.decode(bytes, monotonic_ms)?;
+        let mut incoming = match self.decode(bytes, monotonic_ms) {
+            Err(
+                error @ WireError::PeerAlert {
+                    fields,
+                    protection: AlertProtection::Authenticated,
+                },
+            ) if self.has_committed_receive_epoch()
+                && matches!(fields.level, ALERT_CRITICAL | ALERT_FATAL) =>
+            {
+                // Decode can authenticate records with provisional keys after a
+                // ChangeCipherSpec. Only a previously committed epoch can close
+                // the association here. Dropping the datagram also drops its data.
+                self.handshake.abort();
+                self.release_session(fields.level == ALERT_FATAL)?;
+                return Err(error);
+            }
+            result => result?,
+        };
         if let Some((offer, fragment)) = incoming.client_hello.take() {
             if !matches!(incoming.messages.as_slice(), [Message::ClientHello { .. }]) {
                 return Err(HandshakeError::UnexpectedDatagram.into());
@@ -598,8 +624,46 @@ impl WirePeer {
         Ok(())
     }
 
+    fn has_committed_receive_epoch(&self) -> bool {
+        self.read.protected && !matches!(self.side, Side::LegacyServer(_))
+    }
+
     fn decode<'a>(&self, bytes: &'a [u8], monotonic_ms: u64) -> Result<Incoming<'a>, WireError> {
-        let records = crate::decode_datagram(bytes).map_err(WireError::Decode)?;
+        if bytes.is_empty() {
+            return Err(WireError::Decode(DecodeError {
+                offset: 0,
+                kind: DecodeErrorKind::EmptyDatagram,
+            }));
+        }
+        let committed = self.has_committed_receive_epoch();
+        let mut offset = 0;
+        let mut records = std::iter::from_fn(|| {
+            if offset == bytes.len() {
+                return None;
+            }
+            let start = offset;
+            Some(match crate::decode_record(&bytes[start..]) {
+                Ok(record) => {
+                    offset += record.wire_len();
+                    Ok((start, offset, record))
+                }
+                Err(kind) => {
+                    offset = bytes.len();
+                    Err(WireError::Decode(DecodeError {
+                        offset: start,
+                        kind,
+                    }))
+                }
+            })
+        });
+        // Negotiation still validates the whole SDU's framing before interpreting
+        // it. With committed keys, a verified terminal alert ends consumption.
+        let negotiation_records = if committed {
+            Vec::new()
+        } else {
+            records.by_ref().collect::<Result<Vec<_>, _>>()?
+        };
+        let mut records = negotiation_records.into_iter().map(Ok).chain(records);
         let mut read = self.read;
         let mut traffic = None;
         let prefix = self
@@ -607,27 +671,27 @@ impl WirePeer {
             .as_ref()
             .map(|commit| &commit.flight)
             .filter(|flight| bytes.starts_with(&flight.bytes));
+        let mut last_record = None;
         if let Some(flight) = prefix {
-            let prefix_records = records
-                .get(..flight.messages.len())
-                .ok_or(WireError::InvalidRecord)?;
-            if prefix_records.iter().map(Record::wire_len).sum::<usize>() != flight.bytes.len() {
+            for _ in &flight.messages {
+                last_record = Some(records.next().ok_or(WireError::InvalidRecord)??);
+            }
+            // Frame against the full SDU so an omitted length cannot hide a suffix.
+            if last_record.map(|(_, end, _)| end) != Some(flight.bytes.len()) {
                 return Err(WireError::InvalidRecord);
             }
         }
-        let last = records.last().ok_or(WireError::InvalidRecord)?;
-        let checksum = record_checksum(&bytes[bytes.len() - last.wire_len()..]);
-        let protected_sequence = (last.cipher_spec == CipherSpec::Current).then_some(last.sequence);
         let mut messages = prefix.map_or_else(Vec::new, |flight| flight.messages.clone());
-        let mut offset = prefix.map_or(0, |flight| flight.bytes.len());
+        let prefix_len = messages.len();
         let mut awaiting_finished = false;
         let mut selection = None;
         let mut client_hello = None;
         let mut commit_prefix = None;
+        let mut warning = None;
 
-        for record in records.into_iter().skip(messages.len()) {
-            let record_start = offset;
-            offset += record.wire_len();
+        for framed in records {
+            let (record_start, offset, record) = framed?;
+            last_record = Some((record_start, offset, record));
             let message = match (read.protected, record.cipher_spec) {
                 (false, CipherSpec::Null) if record.sequence == read.next()? => {
                     if record.content_type == RecordType::Alert
@@ -729,7 +793,23 @@ impl WirePeer {
                         }
                         finished
                     } else {
-                        self.decode_open_record(record, &content)?
+                        match self.decode_open_record(record, &content) {
+                            Err(error @ WireError::PeerAlert { fields, .. })
+                                if committed && fields.level == ALERT_WARNING =>
+                            {
+                                // Keep the first diagnostic unless a terminal alert follows.
+                                warning.get_or_insert(error);
+                                continue;
+                            }
+                            Ok(message @ Message::Alert(Alert::CloseNotify(_))) if committed => {
+                                // Keep a verified commit prefix for the existing close path.
+                                messages.truncate(prefix_len);
+                                messages.push(message);
+                                warning = None;
+                                break;
+                            }
+                            result => result?,
+                        }
                     }
                 }
                 _ => return Err(WireError::InvalidRecord),
@@ -739,12 +819,16 @@ impl WirePeer {
         if awaiting_finished {
             return Err(WireError::InvalidRecord);
         }
+        if let Some(error) = warning {
+            return Err(error);
+        }
+        let (start, end, last) = last_record.ok_or(WireError::InvalidRecord)?;
         Ok(Incoming {
             messages,
             read,
             traffic,
-            checksum,
-            protected_sequence,
+            checksum: record_checksum(&bytes[start..end]),
+            protected_sequence: (last.cipher_spec == CipherSpec::Current).then_some(last.sequence),
             selection,
             client_hello,
             commit_prefix,
@@ -819,7 +903,7 @@ impl WirePeer {
                     return Err(WireError::AuthenticationFailed);
                 }
                 fields
-                    .supported_alert()
+                    .supported_alert()?
                     .map(Message::Alert)
                     .ok_or(WireError::PeerAlert {
                         fields,
@@ -849,16 +933,21 @@ impl WirePeer {
             self.handshake.abort();
         }
         if self.status() == Status::Closed {
-            self.traffic = None;
-            let session = self.session.take();
-            if invalidate
-                && let Some(session) = session
-                && let Some(mut cache) = self.lock_cache()?
-            {
-                cache.invalidate(&session);
-            }
+            self.release_session(invalidate)?;
         }
         result
+    }
+
+    fn release_session(&mut self, invalidate: bool) -> Result<(), WireError> {
+        self.traffic = None;
+        let session = self.session.take();
+        if invalidate
+            && let Some(session) = session
+            && let Some(mut cache) = self.lock_cache()?
+        {
+            cache.invalidate(&session);
+        }
+        Ok(())
     }
 
     fn encode(&mut self, messages: Datagram) -> Result<Vec<u8>, WireError> {

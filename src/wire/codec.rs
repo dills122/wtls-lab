@@ -563,13 +563,14 @@ impl AlertFields {
         })
     }
 
-    pub(super) fn supported_alert(self) -> Option<Alert> {
-        match (self.level, self.description) {
+    pub(super) fn supported_alert(self) -> Result<Option<Alert>, WireError> {
+        Ok(match (self.level, self.description) {
             (2, 0) => Some(Alert::CloseNotify(CloseScope::Connection)),
             (3, 1) => Some(Alert::CloseNotify(CloseScope::Session)),
+            (_, 0 | 1) => return Err(WireError::InvalidMessage),
             (1, 57) => Some(Alert::DuplicateFinishedReceived),
             _ => None,
-        }
+        })
     }
 }
 

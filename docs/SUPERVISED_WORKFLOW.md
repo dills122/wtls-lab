@@ -29,8 +29,8 @@ lockfile and installation marker. It invokes Ruflo through the pinned shim.
 Keep packets local and trusted. Their checks are executable argument arrays.
 
 ```sh
-git worktree add -b codex/wtls-201 /path/to/wtls-201
-python3 -B scripts/ruflo/compliance_loop.py claim scripts/ruflo/packets/WTLS-201.json --worktree /path/to/wtls-201
+git worktree add -b codex/wtls-next /path/to/wtls-next
+python3 -B scripts/ruflo/compliance_loop.py claim /path/to/open-wtls-packet.json --worktree /path/to/wtls-next
 python3 -B scripts/ruflo/compliance_loop.py work
 python3 -B scripts/ruflo/compliance_loop.py status
 # Inspect and commit the scoped candidate in its linked worktree.
@@ -53,6 +53,6 @@ the supervisor without starting Ruflo or contacting Codex.
 
 | Work item | Scope | Verification |
 | --- | --- | --- |
-| WTLS-201 | Fall back to a new full legacy handshake when an offered session cannot be resumed | Scoped legacy tests, all Cargo gates, exact-commit review |
+| WTLS-201 (verified) | Fall back to a new full legacy handshake when an offered session cannot be resumed | Scoped legacy tests, all Cargo gates, exact-commit review. See [the evidence manifest](WTLS_EVIDENCE.json) and [the completed packet](../scripts/ruflo/packets/WTLS-201.json). |
 | Next candidate | Independent server-authenticated interoperability | Find a capable historical peer and record its actual authenticated offer first |
 | Later candidate | Abbreviated wire handshake | Specify cache ownership, lifetime and wire confirmation before expanding the engine |

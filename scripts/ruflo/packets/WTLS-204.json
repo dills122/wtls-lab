@@ -13,8 +13,7 @@
     "src/bin/wtls-inspect.rs",
     "src/bin/wtls-inspect/timeline.rs",
     "tests/protected_echo.rs",
-    "tests/inspector.rs",
-    "README.md"
+    "tests/inspector.rs"
   ],
   "checks": [
     [

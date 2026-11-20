@@ -8,10 +8,12 @@ mod codec;
 mod legacy;
 mod protection;
 mod report;
+mod session;
 
-use std::collections::VecDeque;
 use std::error::Error;
 use std::fmt;
+use std::ops::RangeInclusive;
+use std::sync::{Arc, MutexGuard, Weak};
 
 use openssl::error::ErrorStack;
 use openssl::pkey::Private;
@@ -29,13 +31,19 @@ pub use report::{
     PeerAuthentication,
 };
 
-use codec::{FIXED_PARAMETERS, ServerSelection, decode_legacy_client_key_exchange, encode_alert};
+pub use session::{ResumableClient, ResumableServer};
+
+use codec::{
+    FIXED_PARAMETERS, ServerSelection, decode_legacy_client_key_exchange, encode_alert,
+    encode_unknown_key_id,
+};
 use legacy::WINWAP_PARAMETERS;
 use protection::{MAX_PLAINTEXT, Traffic, WireFinished};
+use session::{Session, SessionCache, SharedCache};
 
 use crate::handshake::{
-    Action, CloseScope, Datagram, Handshake, HandshakeError, HandshakeKind, Message, RetryPolicy,
-    Role, SessionId, Status,
+    Action, Alert, CloseScope, Datagram, Handshake, HandshakeError, HandshakeKind, Message,
+    RetryPolicy, Role, SessionId, Status,
 };
 use crate::{CipherSpec, DecodeError, EncodeError, LengthForm, Record, RecordType};
 
@@ -108,7 +116,7 @@ pub enum WireAction {
 }
 
 enum Side {
-    Client { trust: TrustAnchor, now: u32 },
+    Client(TrustAnchor),
     Server(Rsa<Private>),
     LegacyServer(Rsa<Private>),
 }
@@ -137,36 +145,51 @@ struct Flight {
     bytes: Vec<u8>,
 }
 
-struct Incoming {
+struct VerifiedCommit {
+    flight: Flight,
+    finished_checksum: [u8; 4],
+}
+
+struct Incoming<'a> {
     messages: Datagram,
     read: Direction,
     traffic: Option<Traffic>,
     checksum: [u8; 4],
+    protected_sequence: Option<u16>,
     selection: Option<ServerSelection>,
+    client_hello: Option<(ClientHello<'a>, &'a [u8])>,
+    commit_prefix: Option<(usize, [u8; 4])>,
 }
 
-/// A full-handshake-only association driven by one in-memory datagram at a time.
+/// An association driven by one in-memory datagram at a time.
 /// The caller delivers the emitted bytes to the other peer and drives the clock.
 pub struct WirePeer {
     side: Side,
     handshake: Handshake,
+    now: u32,
+    credential_validity: Option<RangeInclusive<u32>>,
+    cache: Option<SharedCache>,
+    session: Option<Weak<Session>>,
     random: Option<[u8; 16]>,
     peer_random: Option<[u8; 16]>,
     traffic: Option<Traffic>,
     read: Direction,
     write: Direction,
     received_flights: Vec<Flight>,
+    verified_commit: Option<VerifiedCommit>,
     sent_flights: Vec<Flight>,
-    sent_checksums: VecDeque<[u8; 4]>,
+    sent_checksums: Vec<[u8; 4]>,
     last_received: [u8; 4],
+    highest_received_sequence: Option<u16>,
     selection: Option<ServerSelection>,
 }
 
 impl WirePeer {
     pub fn client(retry: RetryPolicy, trust: TrustAnchor, now: u32) -> Self {
         Self::new(
-            Side::Client { trust, now },
+            Side::Client(trust),
             Handshake::client(retry, Vec::new(), None),
+            now,
             None,
         )
     }
@@ -174,11 +197,9 @@ impl WirePeer {
     pub fn server(identity: ServerIdentity, now: u32) -> Result<Self, WireError> {
         let (random, session) = server_parameters(now)?;
         let handshake = Handshake::server(session, random, identity.certificate, None);
-        Ok(Self::new(
-            Side::Server(identity.key),
-            handshake,
-            Some(random),
-        ))
+        let mut peer = Self::new(Side::Server(identity.key), handshake, now, Some(random));
+        peer.credential_validity = Some(identity.validity);
+        Ok(peer)
     }
 
     /// Opt into the anonymous RSA/DES-CBC profile observed in WinWAP.
@@ -187,22 +208,33 @@ impl WirePeer {
         let (random, session) = server_parameters(now)?;
         let key = Rsa::generate(2048)?;
         let handshake = legacy_server_handshake(&key, session, random)?;
-        Ok(Self::new(Side::LegacyServer(key), handshake, Some(random)))
+        Ok(Self::new(
+            Side::LegacyServer(key),
+            handshake,
+            now,
+            Some(random),
+        ))
     }
 
-    fn new(side: Side, handshake: Handshake, random: Option<[u8; 16]>) -> Self {
+    fn new(side: Side, handshake: Handshake, now: u32, random: Option<[u8; 16]>) -> Self {
         Self {
             side,
             handshake,
+            now,
+            credential_validity: None,
+            cache: None,
+            session: None,
             random,
             peer_random: None,
             traffic: None,
             read: Direction::default(),
             write: Direction::default(),
             received_flights: Vec::new(),
+            verified_commit: None,
             sent_flights: Vec::new(),
-            sent_checksums: VecDeque::new(),
+            sent_checksums: Vec::new(),
             last_received: [0; 4],
+            highest_received_sequence: None,
             selection: None,
         }
     }
@@ -211,18 +243,20 @@ impl WirePeer {
         self.handshake.status()
     }
 
-    /// Provide negotiated parameters only after the full handshake is established.
+    /// Provide negotiated parameters after verifying the peer's Finished.
     pub fn connection_info(&self) -> Option<ConnectionInfo> {
-        (self.status() == Status::Open).then_some(ConnectionInfo {
-            parameters: self
-                .selection
-                .as_ref()
-                .map_or(FIXED_PARAMETERS, |selection| selection.parameters),
-            peer_authentication: match self.side {
-                Side::Client { .. } => PeerAuthentication::VerifiedServerCertificate,
-                Side::Server(_) | Side::LegacyServer(_) => PeerAuthentication::None,
+        matches!(self.status(), Status::Open | Status::AwaitingConfirmation).then_some(
+            ConnectionInfo {
+                parameters: self
+                    .selection
+                    .as_ref()
+                    .map_or(FIXED_PARAMETERS, |selection| selection.parameters),
+                peer_authentication: match self.side {
+                    Side::Client(_) => PeerAuthentication::VerifiedServerCertificate,
+                    Side::Server(_) | Side::LegacyServer(_) => PeerAuthentication::None,
+                },
             },
-        })
+        )
     }
 
     pub fn deadline(&self) -> Option<u64> {
@@ -230,10 +264,14 @@ impl WirePeer {
     }
 
     pub fn start(&mut self, monotonic_ms: u64) -> Result<Vec<WireAction>, WireError> {
-        let Side::Client { now, .. } = self.side else {
+        if !matches!(self.side, Side::Client(_)) || self.status() != Status::Idle {
             return Err(HandshakeError::InvalidState.into());
-        };
-        let random = random(now)?;
+        }
+        let random = random(self.now)?;
+        let session = self.find_session(None, monotonic_ms)?;
+        self.handshake
+            .set_idle_cached_session(session.as_ref().map(|session| session.id))?;
+        self.session = session.as_ref().map(Arc::downgrade);
         let actions = self.handshake.start(random, monotonic_ms)?;
         self.random = Some(random);
         self.apply(actions)
@@ -281,58 +319,106 @@ impl WirePeer {
             return self.apply(actions);
         }
 
-        let mut incoming = self.decode(bytes)?;
-        let has_handshake = carries_handshake(&incoming.messages);
+        let mut incoming = self.decode(bytes, monotonic_ms)?;
+        if let Some((offer, fragment)) = incoming.client_hello.take() {
+            if !matches!(incoming.messages.as_slice(), [Message::ClientHello { .. }]) {
+                return Err(HandshakeError::UnexpectedDatagram.into());
+            }
+            if !self.prepare_server_hello(&mut incoming, &offer, fragment, monotonic_ms)? {
+                let fragment = encode_unknown_key_id(incoming.checksum);
+                let reply = crate::encode_datagram(&[Record {
+                    content_type: RecordType::Alert,
+                    cipher_spec: CipherSpec::Null,
+                    sequence: 0,
+                    length_form: LengthForm::Explicit,
+                    fragment: &fragment,
+                }])
+                .map_err(WireError::Encode)?;
+                return Ok(vec![WireAction::Send(reply)]);
+            }
+        }
+
         if let [
-            Message::ServerHello { random: remote, .. },
+            Message::ServerHello {
+                random: remote,
+                session,
+            },
             Message::Certificate(certificate),
             Message::ServerHelloDone,
         ] = incoming.messages.as_slice()
-            && let Side::Client { trust, now } = &self.side
+            && let Side::Client(trust) = &self.side
             && self.traffic.is_none()
+            && Some(*session) != self.handshake.cached_session()
         {
             let local = self.random.ok_or(WireError::InvalidMessage)?;
-            if *remote == local {
-                return Err(WireError::InvalidMessage);
-            }
-            let key = match trust.verify(certificate, *now) {
-                Ok(key) => key,
+            let leaf = match trust.verify(certificate, self.now) {
+                Ok(leaf) => leaf,
                 Err(error) => {
                     self.handshake.abort();
+                    self.session = None;
                     return Err(error);
                 }
             };
-            let (exchange, traffic) = Traffic::begin_client(&key, local, *remote)?;
+            let selected = incoming
+                .selection
+                .as_ref()
+                .ok_or(WireError::InvalidMessage)?;
+            let (exchange, traffic) =
+                Traffic::begin_client(&leaf.key, local, *remote, selected.parameters)?;
             self.handshake.install_client_key_exchange(exchange)?;
+            self.credential_validity = Some(leaf.validity);
             incoming.traffic = Some(traffic);
         }
 
+        // Hold the cache lock through Finished verification so a concurrent close
+        // or eviction cannot remove this entry between the check and establishment.
+        let cache = if self.status() == Status::Negotiating
+            && let Some(id) = self.handshake.cached_session()
+            && match &self.side {
+                Side::Server(_) => incoming.commit_prefix.is_some(),
+                Side::Client(_) => matches!(
+                    incoming.messages.as_slice(),
+                    [Message::ServerHello { session, .. }, Message::ChangeCipherSpec, Message::Finished(_)]
+                        if *session == id
+                ),
+                Side::LegacyServer(_) => false,
+            } {
+            let mut cache = self
+                .cache
+                .as_ref()
+                .ok_or(WireError::InvalidMessage)?
+                .lock()
+                .map_err(|_| WireError::Provider)?;
+            let current = cache.find(Some(id), self.now, monotonic_ms);
+            if !current.as_ref().is_some_and(|entry| {
+                self.session
+                    .as_ref()
+                    .is_some_and(|session| session.ptr_eq(&Arc::downgrade(entry)))
+            }) {
+                self.handshake.abort();
+                self.traffic = None;
+                self.session = None;
+                return Err(WireError::InvalidMessage);
+            }
+            Some(cache)
+        } else {
+            None
+        };
+
         let context = WireFinished(
             incoming.traffic.as_ref().or(self.traffic.as_ref()),
-            self.selection.as_ref(),
+            incoming.selection.as_ref().or(self.selection.as_ref()),
         );
-        if let [Message::ClientHello { .. }] = incoming.messages.as_slice()
-            && let Some(offered_id) = incoming
-                .selection
-                .as_ref()
-                .and_then(|offer| offer.offered_session)
-            && let Some(fresh_session) = self.handshake.idle_server_session()
-            && *fresh_session == offered_id
-        {
-            let mut fresh = offered_id.0;
-            while fresh == offered_id.0 {
-                rand_bytes(&mut fresh)?;
-            }
-            *fresh_session = SessionId(fresh);
-        }
-        let actions = match self
+        let actions = self
             .handshake
-            .receive(&incoming.messages, monotonic_ms, &context)
-        {
+            .receive(&incoming.messages, monotonic_ms, &context);
+        drop(cache);
+        let actions = match actions {
             Ok(actions) => actions,
             Err(error) => {
                 if self.status() == Status::Closed {
                     self.traffic = None;
+                    self.session = None;
                 }
                 return Err(error.into());
             }
@@ -348,34 +434,200 @@ impl WirePeer {
         if let [Message::ClientHello { random, .. }] = incoming.messages.as_slice() {
             self.peer_random = Some(*random);
         }
-        if has_handshake || !actions.is_empty() {
+        let has_handshake = carries_handshake(&incoming.messages);
+        let accepted = if incoming.messages == [Message::Alert(Alert::DuplicateFinishedReceived)] {
+            // Acknowledgments produce no action, even when they confirm a commit.
+            true
+        } else if has_handshake && self.verified_commit.is_some() {
+            // A replayed commit or application record must not replace the close checksum.
+            actions
+                .iter()
+                .any(|action| matches!(action, Action::Deliver(_) | Action::Closed(_)))
+        } else {
+            has_handshake || !actions.is_empty()
+        };
+        // Keep the newest accepted record as the close reference even when an
+        // older record is delivered out of order.
+        if accepted
+            && self.highest_received_sequence.is_none_or(|highest| {
+                incoming
+                    .protected_sequence
+                    .is_some_and(|sequence| sequence > highest)
+            })
+        {
             self.last_received = incoming.checksum;
+            self.highest_received_sequence = incoming.protected_sequence;
         }
-        if has_handshake {
+        let established = actions.iter().find_map(|action| match action {
+            Action::Established { kind, session } => Some((*kind, *session)),
+            _ => None,
+        });
+        if let Some((length, finished_checksum)) = incoming.commit_prefix
+            && matches!(established, Some((HandshakeKind::Resumed, _)))
+            && matches!(self.side, Side::Server(_))
+        {
+            self.verified_commit = Some(VerifiedCommit {
+                flight: Flight {
+                    messages: incoming.messages[..2].to_vec(),
+                    bytes: bytes[..length].to_vec(),
+                },
+                finished_checksum,
+            });
+        } else if has_handshake && self.verified_commit.is_none() {
             self.received_flights.push(Flight {
                 messages: incoming.messages,
                 bytes: bytes.to_vec(),
             });
         }
-        self.apply(actions)
+        let result = self.apply(actions)?;
+        if let Some((HandshakeKind::Full, id)) = established
+            && let Err(error) = self.cache_full_session(id, monotonic_ms)
+        {
+            self.handshake.abort();
+            self.traffic = None;
+            self.session = None;
+            return Err(error);
+        }
+        Ok(result)
     }
 
-    fn decode(&self, bytes: &[u8]) -> Result<Incoming, WireError> {
-        let records = crate::decode_datagram(bytes).map_err(WireError::Decode)?;
-        let last = records.last().ok_or(WireError::InvalidRecord)?;
-        let checksum = record_checksum(&bytes[bytes.len() - last.wire_len()..]);
-        let mut read = self.read;
-        let mut traffic = None;
-        let mut messages = Vec::new();
-        let mut awaiting_finished = false;
-        let mut selection = None;
-        let server_profile = match self.side {
-            Side::Server(_) => Some(FIXED_PARAMETERS),
-            Side::LegacyServer(_) => Some(WINWAP_PARAMETERS),
-            Side::Client { .. } => None,
+    fn lock_cache(&self) -> Result<Option<MutexGuard<'_, SessionCache>>, WireError> {
+        self.cache
+            .as_ref()
+            .map(|cache| cache.lock().map_err(|_| WireError::Provider))
+            .transpose()
+    }
+
+    fn find_session(
+        &self,
+        id: Option<SessionId>,
+        monotonic_ms: u64,
+    ) -> Result<Option<Arc<Session>>, WireError> {
+        Ok(self
+            .lock_cache()?
+            .and_then(|mut cache| cache.find(id, self.now, monotonic_ms)))
+    }
+
+    fn prepare_server_hello(
+        &mut self,
+        incoming: &mut Incoming<'_>,
+        offer: &ClientHello<'_>,
+        fragment: &[u8],
+        monotonic_ms: u64,
+    ) -> Result<bool, WireError> {
+        let offered = offer.offered_session();
+        let cached = if let Some(id) = offered {
+            self.find_session(Some(id), monotonic_ms)?
+                .filter(|entry| offer.check_record_choices(entry.parameters).is_ok())
+        } else {
+            None
+        };
+        let parameters = match (&self.side, &cached) {
+            (_, Some(entry)) => entry.parameters,
+            (Side::LegacyServer(_), None) => WINWAP_PARAMETERS,
+            (_, None) => FIXED_PARAMETERS,
         };
 
-        for record in records {
+        if cached.is_none()
+            && matches!(self.side, Side::Server(_))
+            && !offer.session_id.is_empty()
+            && offer.key_exchanges.is_empty()
+        {
+            return Ok(false);
+        }
+        let selection = ServerSelection::choose(offer, fragment, parameters, cached.is_some())?;
+        if let Some(session) = &cached {
+            let local = self.random.ok_or(WireError::InvalidRecord)?;
+            if local == offer.random {
+                return Err(WireError::InvalidMessage);
+            }
+            incoming.traffic = Some(Traffic::from_master(
+                session.master.clone(),
+                offer.random,
+                local,
+                selection.parameters,
+            ));
+        } else {
+            let mut fresh = *self
+                .handshake
+                .idle_server_session()
+                .ok_or(HandshakeError::InvalidState)?;
+            if let Some(mut cache) = self.lock_cache()? {
+                fresh = cache.fresh_id(fresh, offered, monotonic_ms)?;
+            } else {
+                while Some(fresh) == offered {
+                    rand_bytes(&mut fresh.0)?;
+                }
+            }
+            *self
+                .handshake
+                .idle_server_session()
+                .ok_or(HandshakeError::InvalidState)? = fresh;
+        }
+        self.handshake
+            .set_idle_cached_session(cached.as_ref().map(|session| session.id))?;
+        self.session = cached.as_ref().map(Arc::downgrade);
+        incoming.selection = Some(selection);
+        Ok(true)
+    }
+
+    fn cache_full_session(&mut self, id: SessionId, monotonic_ms: u64) -> Result<(), WireError> {
+        let Some(mut cache) = self.lock_cache()? else {
+            return Ok(());
+        };
+        let Some(validity) = self
+            .credential_validity
+            .as_ref()
+            .filter(|validity| validity.contains(&self.now))
+        else {
+            return Ok(());
+        };
+        let traffic = self.traffic.as_ref().ok_or(WireError::InvalidRecord)?;
+        let selection = self.selection.as_ref().ok_or(WireError::InvalidRecord)?;
+        let session = Arc::new(Session {
+            id,
+            master: traffic.master(),
+            parameters: selection.parameters,
+            validity: validity.clone(),
+            established_ms: monotonic_ms,
+        });
+        let current = Arc::downgrade(&session);
+        cache.insert(session)?;
+        drop(cache);
+        self.session = Some(current);
+        Ok(())
+    }
+
+    fn decode<'a>(&self, bytes: &'a [u8], monotonic_ms: u64) -> Result<Incoming<'a>, WireError> {
+        let records = crate::decode_datagram(bytes).map_err(WireError::Decode)?;
+        let mut read = self.read;
+        let mut traffic = None;
+        let prefix = self
+            .verified_commit
+            .as_ref()
+            .map(|commit| &commit.flight)
+            .filter(|flight| bytes.starts_with(&flight.bytes));
+        if let Some(flight) = prefix {
+            let prefix_records = records
+                .get(..flight.messages.len())
+                .ok_or(WireError::InvalidRecord)?;
+            if prefix_records.iter().map(Record::wire_len).sum::<usize>() != flight.bytes.len() {
+                return Err(WireError::InvalidRecord);
+            }
+        }
+        let last = records.last().ok_or(WireError::InvalidRecord)?;
+        let checksum = record_checksum(&bytes[bytes.len() - last.wire_len()..]);
+        let protected_sequence = (last.cipher_spec == CipherSpec::Current).then_some(last.sequence);
+        let mut messages = prefix.map_or_else(Vec::new, |flight| flight.messages.clone());
+        let mut offset = prefix.map_or(0, |flight| flight.bytes.len());
+        let mut awaiting_finished = false;
+        let mut selection = None;
+        let mut client_hello = None;
+        let mut commit_prefix = None;
+
+        for record in records.into_iter().skip(messages.len()) {
+            let record_start = offset;
+            offset += record.wire_len();
             let message = match (read.protected, record.cipher_spec) {
                 (false, CipherSpec::Null) if record.sequence == read.next()? => {
                     if record.content_type == RecordType::Alert
@@ -394,19 +646,32 @@ impl WirePeer {
                         Message::ChangeCipherSpec
                     } else if record.content_type == RecordType::Handshake {
                         let message = if record.fragment.first() == Some(&1)
-                            && let Some(parameters) = server_profile
+                            && self.local_role() == Role::Server
                         {
-                            if self.status() != Status::Idle {
+                            if self.status() != Status::Idle || !messages.is_empty() {
                                 return Err(WireError::InvalidRecord);
                             }
-                            let selected = ServerSelection::select(record.fragment, parameters)?;
-                            let random = selected.client_random;
-                            selection = Some(selected);
-                            // Every offered ID is a cache miss for this full-handshake profile.
-                            Message::ClientHello {
-                                random,
-                                resume: None,
+                            let offer = decode_client_hello(record.fragment)?;
+                            let message = Message::ClientHello {
+                                random: offer.random,
+                                resume: offer.offered_session(),
+                            };
+                            client_hello = Some((offer, record.fragment));
+                            message
+                        } else if record.fragment.first() == Some(&2)
+                            && self.local_role() == Role::Client
+                        {
+                            if self.status() != Status::Negotiating
+                                || self.selection.is_some()
+                                || !messages.is_empty()
+                            {
+                                return Err(WireError::InvalidRecord);
                             }
+                            let (message, selected, keys) =
+                                self.read_server_hello(record.fragment, monotonic_ms)?;
+                            selection = Some(selected);
+                            traffic = keys;
+                            message
                         } else if let Side::LegacyServer(key) = &self.side
                             && record.fragment.first() == Some(&16)
                         {
@@ -416,15 +681,10 @@ impl WirePeer {
                         };
                         match &message {
                             Message::Finished(_) => return Err(WireError::InvalidRecord),
-                            Message::ClientHello {
-                                resume: Some(_), ..
-                            } => {
-                                return Err(WireError::UnsupportedProfile);
-                            }
                             Message::ClientKeyExchange(exchange) => {
                                 let key = match &self.side {
                                     Side::Server(key) | Side::LegacyServer(key) => key,
-                                    Side::Client { .. } => return Err(WireError::InvalidRecord),
+                                    Side::Client(_) => return Err(WireError::InvalidRecord),
                                 };
                                 if !messages.is_empty() || self.traffic.is_some() {
                                     return Err(WireError::InvalidRecord);
@@ -463,6 +723,10 @@ impl WirePeer {
                             return Err(WireError::InvalidRecord);
                         }
                         awaiting_finished = false;
+                        if messages.as_slice() == [Message::ChangeCipherSpec] {
+                            commit_prefix =
+                                Some((offset, record_checksum(&bytes[record_start..offset])));
+                        }
                         finished
                     } else {
                         self.decode_open_record(record, &content)?
@@ -480,8 +744,64 @@ impl WirePeer {
             read,
             traffic,
             checksum,
+            protected_sequence,
             selection,
+            client_hello,
+            commit_prefix,
         })
+    }
+
+    fn read_server_hello(
+        &self,
+        fragment: &[u8],
+        monotonic_ms: u64,
+    ) -> Result<(Message, ServerSelection, Option<Traffic>), WireError> {
+        let hello = decode_server_hello(fragment)?;
+        let id = SessionId(
+            hello
+                .session_id
+                .try_into()
+                .map_err(|_| WireError::UnsupportedProfile)?,
+        );
+        let cached = if Some(id) == self.handshake.cached_session() {
+            let offered = self.session.as_ref().and_then(Weak::upgrade);
+            Some(
+                self.find_session(Some(id), monotonic_ms)?
+                    .filter(|current| {
+                        offered
+                            .as_ref()
+                            .is_some_and(|offer| Arc::ptr_eq(offer, current))
+                    })
+                    .ok_or(WireError::InvalidMessage)?,
+            )
+        } else {
+            None
+        };
+        let selected = ServerSelection::accept(
+            &hello,
+            fragment,
+            cached.as_ref().map(|session| session.parameters),
+        )?;
+        let local = self.random.ok_or(WireError::InvalidRecord)?;
+        if local == hello.random {
+            return Err(WireError::InvalidMessage);
+        }
+        let traffic = cached.map(|session| {
+            Traffic::from_master(
+                session.master.clone(),
+                local,
+                hello.random,
+                selected.parameters,
+            )
+        });
+        Ok((
+            Message::ServerHello {
+                random: hello.random,
+                session: id,
+            },
+            selected,
+            traffic,
+        ))
     }
 
     fn decode_open_record(&self, record: Record<'_>, data: &[u8]) -> Result<Message, WireError> {
@@ -511,6 +831,7 @@ impl WirePeer {
     }
 
     fn apply(&mut self, actions: Vec<Action>) -> Result<Vec<WireAction>, WireError> {
+        let invalidate = actions.contains(&Action::Closed(CloseScope::Session));
         let result = actions
             .into_iter()
             .map(|action| {
@@ -529,29 +850,45 @@ impl WirePeer {
         }
         if self.status() == Status::Closed {
             self.traffic = None;
+            let session = self.session.take();
+            if invalidate
+                && let Some(session) = session
+                && let Some(mut cache) = self.lock_cache()?
+            {
+                cache.invalidate(&session);
+            }
         }
         result
     }
 
     fn encode(&mut self, messages: Datagram) -> Result<Vec<u8>, WireError> {
-        if let Some(flight) = self
+        let prefix = self
             .sent_flights
             .iter()
-            .find(|flight| flight.messages == messages)
+            .find(|flight| messages.starts_with(&flight.messages));
+        if let Some(flight) = prefix
+            && flight.messages.len() == messages.len()
         {
             return Ok(flight.bytes.clone());
         }
         let mut write = self.write;
-        let mut datagram = Vec::new();
+        let mut datagram = prefix.map_or_else(Vec::new, |flight| flight.bytes.clone());
         let mut checksums = Vec::new();
 
-        for message in &messages {
+        for message in &messages[prefix.map_or(0, |flight| flight.messages.len())..] {
             let (content_type, plaintext) = match message {
                 Message::ChangeCipherSpec => (RecordType::ChangeCipherSpec, vec![1]),
-                Message::Alert(alert) => (
-                    RecordType::Alert,
-                    encode_alert(*alert, self.last_received).to_vec(),
-                ),
+                Message::Alert(alert) => {
+                    let checksum = if *alert == Alert::DuplicateFinishedReceived {
+                        self.verified_commit
+                            .as_ref()
+                            .ok_or(WireError::InvalidRecord)?
+                            .finished_checksum
+                    } else {
+                        self.last_received
+                    };
+                    (RecordType::Alert, encode_alert(*alert, checksum).to_vec())
+                }
                 Message::ApplicationData { payload, .. } => {
                     (RecordType::ApplicationData, payload.clone())
                 }
@@ -589,13 +926,11 @@ impl WirePeer {
         }
 
         self.write = write;
-        for checksum in checksums {
-            if self.sent_checksums.len() == 32 {
-                self.sent_checksums.pop_front();
-            }
-            self.sent_checksums.push_back(checksum);
-        }
-        if carries_handshake(&messages) {
+        // A close may reference any earlier record that reached the peer.
+        // Each new record uses a non-wrapping sequence in the clear or
+        // protected epoch, and reused flight bytes add no entries.
+        self.sent_checksums.extend(checksums);
+        if prefix.is_none() && carries_handshake(&messages) {
             self.sent_flights.push(Flight {
                 messages,
                 bytes: datagram.clone(),
@@ -606,7 +941,7 @@ impl WirePeer {
 
     fn local_role(&self) -> Role {
         match self.side {
-            Side::Client { .. } => Role::Client,
+            Side::Client(_) => Role::Client,
             Side::Server(_) | Side::LegacyServer(_) => Role::Server,
         }
     }

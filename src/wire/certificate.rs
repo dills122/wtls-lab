@@ -14,6 +14,7 @@ const RSA_KEY_PREFIX: &[u8] = &[2, 0]; // RSA public key, no parameters
 const UTF8_TEXT_IDENTIFIER: &[u8] = &[1, 0, 106];
 
 /// One out-of-band RSA CA key and the exact expected WTLS subject identity.
+#[derive(Clone)]
 pub struct TrustAnchor {
     issuer: String,
     subject: String,
@@ -30,7 +31,7 @@ impl TrustAnchor {
         })
     }
 
-    pub(super) fn verify(&self, certificate: &[u8], now: u32) -> Result<Rsa<Public>, WireError> {
+    pub(super) fn verify(&self, certificate: &[u8], now: u32) -> Result<VerifiedLeaf, WireError> {
         let certificate = parse(certificate).map_err(|_| WireError::CertificateRejected)?;
         if certificate.issuer != self.issuer
             || certificate.subject != self.subject
@@ -49,13 +50,23 @@ impl TrustAnchor {
         if len != 20 || !memcmp::eq(&digest[..len], &sha1(certificate.tbs)) {
             return Err(WireError::CertificateRejected);
         }
-        Ok(certificate.key)
+        Ok(VerifiedLeaf {
+            key: certificate.key,
+            validity: certificate.validity,
+        })
     }
 }
 
+pub(super) struct VerifiedLeaf {
+    pub(super) key: Rsa<Public>,
+    pub(super) validity: RangeInclusive<u32>,
+}
+
+#[derive(Clone)]
 pub struct ServerIdentity {
     pub(super) certificate: Vec<u8>,
     pub(super) key: Rsa<Private>,
+    pub(super) validity: RangeInclusive<u32>,
 }
 
 impl ServerIdentity {
@@ -65,7 +76,12 @@ impl ServerIdentity {
         if leaf.key.n() != key.n() || leaf.key.e() != key.e() {
             return Err(WireError::CertificateRejected);
         }
-        Ok(Self { certificate, key })
+        let validity = leaf.validity;
+        Ok(Self {
+            certificate,
+            key,
+            validity,
+        })
     }
 }
 

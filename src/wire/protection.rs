@@ -9,7 +9,9 @@ use openssl::symm::{Cipher, Crypter, Mode};
 use zeroize::Zeroizing;
 
 use super::certificate::write_rsa_key;
-use super::codec::{FIXED_PARAMETERS, ServerSelection, VERSION, encode_handshake};
+#[cfg(test)]
+use super::codec::FIXED_PARAMETERS;
+use super::codec::{ServerSelection, VERSION, encode_handshake};
 use super::legacy::DES_CBC;
 use super::{NegotiatedParameters, WireError};
 use crate::Record;
@@ -21,8 +23,10 @@ const KEY_BLOCK_SIZE: usize = MAC_SIZE + 24 + BLOCK_SIZE;
 pub(super) const MAX_PLAINTEXT: usize =
     (u16::MAX as usize / BLOCK_SIZE) * BLOCK_SIZE - MAC_SIZE - 1;
 
+pub(super) type MasterSecret = Zeroizing<[u8; 20]>;
+
 pub(super) struct Traffic {
-    master: Zeroizing<[u8; 20]>,
+    master: MasterSecret,
     client_random: [u8; 16],
     server_random: [u8; 16],
     parameters: NegotiatedParameters,
@@ -43,18 +47,37 @@ impl Traffic {
             b"master secret",
             &[&client_random, &server_random],
         )?;
-        Ok(Self {
+        Ok(Self::from_master(
             master,
             client_random,
             server_random,
             parameters,
-        })
+        ))
+    }
+
+    pub(super) fn from_master(
+        master: MasterSecret,
+        client_random: [u8; 16],
+        server_random: [u8; 16],
+        parameters: NegotiatedParameters,
+    ) -> Self {
+        Self {
+            master,
+            client_random,
+            server_random,
+            parameters,
+        }
+    }
+
+    pub(super) fn master(&self) -> MasterSecret {
+        self.master.clone()
     }
 
     pub(super) fn begin_client(
         key: &Rsa<Public>,
         client_random: [u8; 16],
         server_random: [u8; 16],
+        parameters: NegotiatedParameters,
     ) -> Result<(Vec<u8>, Self), WireError> {
         let mut secret = Zeroizing::new([0u8; 20]);
         secret[0] = VERSION;
@@ -68,13 +91,7 @@ impl Traffic {
 
         Ok((
             ciphertext,
-            Self::from_secret(
-                &secret[..],
-                key,
-                client_random,
-                server_random,
-                FIXED_PARAMETERS,
-            )?,
+            Self::from_secret(&secret[..], key, client_random, server_random, parameters)?,
         ))
     }
 

@@ -1,4 +1,4 @@
-use std::num::NonZeroU64;
+use std::num::{NonZeroU64, NonZeroUsize};
 use std::sync::OnceLock;
 
 use openssl::hash::MessageDigest;
@@ -9,8 +9,8 @@ use openssl::sign::Signer;
 use openssl::symm::{Cipher, Crypter, Mode};
 use wtls_lab::handshake::{CloseScope, HandshakeKind, Message, RetryPolicy, SessionId, Status};
 use wtls_lab::wire::{
-    PeerAuthentication, ServerIdentity, TrustAnchor, WireAction, WireError, WirePeer,
-    decode_client_hello, decode_handshake, decode_server_hello, encode_handshake,
+    PeerAuthentication, ResumableServer, ServerIdentity, TrustAnchor, WireAction, WireError,
+    WirePeer, decode_client_hello, decode_handshake, decode_server_hello, encode_handshake,
     issue_certificate,
 };
 use wtls_lab::{CipherSpec, LengthForm, Record, RecordType, decode_datagram, encode_datagram};
@@ -28,7 +28,7 @@ fn public(key: &Rsa<Private>) -> Rsa<Public> {
     Rsa::from_public_components(key.n().to_owned().unwrap(), key.e().to_owned().unwrap()).unwrap()
 }
 
-fn peers(expected_subject: &str) -> (WirePeer, WirePeer) {
+fn identity() -> ServerIdentity {
     let (ca, server_key) = keys();
     let leaf = issue_certificate(
         ISSUER,
@@ -38,7 +38,11 @@ fn peers(expected_subject: &str) -> (WirePeer, WirePeer) {
         &public(server_key),
     )
     .unwrap();
-    let identity = ServerIdentity::new(leaf, server_key.clone()).unwrap();
+    ServerIdentity::new(leaf, server_key.clone()).unwrap()
+}
+
+fn peers(expected_subject: &str) -> (WirePeer, WirePeer) {
+    let (ca, _) = keys();
     let trust = TrustAnchor::new(ISSUER, expected_subject, public(ca)).unwrap();
     let retry = RetryPolicy {
         timeout_ms: NonZeroU64::new(10).unwrap(),
@@ -46,7 +50,7 @@ fn peers(expected_subject: &str) -> (WirePeer, WirePeer) {
     };
     (
         WirePeer::client(retry, trust, NOW),
-        WirePeer::server(identity, NOW).unwrap(),
+        WirePeer::server(identity(), NOW).unwrap(),
     )
 }
 
@@ -217,16 +221,12 @@ fn expected_ciphertext(
     record: Record<'_>,
     master: &[u8],
     label: &[u8],
+    client_random: &[u8; 16],
     server_random: &[u8; 16],
     epoch_start: u16,
 ) -> Vec<u8> {
     let sequence = record.sequence.to_be_bytes();
-    let seed = [
-        &epoch_start.to_be_bytes()[..],
-        server_random,
-        &NONCANONICAL_RANDOM,
-    ]
-    .concat();
+    let seed = [&epoch_start.to_be_bytes()[..], server_random, client_random].concat();
     let keys = expected_prf(master, label, &seed, 52);
     let plaintext = record.fragment;
     let mac_input = [
@@ -282,18 +282,7 @@ fn noncanonical_authenticated_exchange_uses_the_wire_transcript_and_selected_ref
         .public_encrypt(&secret, &mut encrypted, Padding::PKCS1)
         .unwrap();
     encrypted.truncate(len);
-    let mut premaster = secret.to_vec();
-    for component in [key.e(), key.n()] {
-        let bytes = component.to_vec();
-        premaster.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
-        premaster.extend(bytes);
-    }
-    let master = expected_prf(
-        &premaster,
-        b"master secret",
-        &[NONCANONICAL_RANDOM, selected.random].concat(),
-        20,
-    );
+    let master = fixture_master(&secret, &NONCANONICAL_RANDOM, &selected.random);
     let exchange = encode_handshake(&Message::ClientKeyExchange(encrypted)).unwrap();
     let mut transcript = [
         client_hello.as_slice(),
@@ -311,8 +300,14 @@ fn noncanonical_authenticated_exchange_uses_the_wire_transcript_and_selected_ref
         cipher_spec: CipherSpec::Current,
         ..clear_record(RecordType::Handshake, 0, &client_finished)
     };
-    let ciphertext =
-        expected_ciphertext(protected, &master, b"client expansion", &selected.random, 0);
+    let ciphertext = expected_ciphertext(
+        protected,
+        &master,
+        b"client expansion",
+        &NONCANONICAL_RANDOM,
+        &selected.random,
+        0,
+    );
     protected.fragment = &ciphertext;
     let commit = encode_datagram(&[
         clear_record(RecordType::Handshake, 1, &exchange),
@@ -341,6 +336,7 @@ fn noncanonical_authenticated_exchange_uses_the_wire_transcript_and_selected_ref
             },
             &master,
             b"server expansion",
+            &NONCANONICAL_RANDOM,
             &selected.random,
             0,
         )
@@ -361,6 +357,7 @@ fn noncanonical_authenticated_exchange_uses_the_wire_transcript_and_selected_ref
         application,
         &master,
         b"client expansion",
+        &NONCANONICAL_RANDOM,
         &selected.random,
         2,
     );
@@ -369,6 +366,156 @@ fn noncanonical_authenticated_exchange_uses_the_wire_transcript_and_selected_ref
     assert_eq!(
         server.receive(&datagram, 5).unwrap(),
         [WireAction::Deliver(b"new epoch".to_vec())]
+    );
+}
+
+fn fixture_master(secret: &[u8], client_random: &[u8; 16], server_random: &[u8; 16]) -> Vec<u8> {
+    let key = &keys().1;
+    let mut premaster = secret.to_vec();
+    for component in [key.e(), key.n()] {
+        let bytes = component.to_vec();
+        premaster.extend_from_slice(&(bytes.len() as u16).to_be_bytes());
+        premaster.extend(bytes);
+    }
+    expected_prf(
+        &premaster,
+        b"master secret",
+        &[client_random.as_slice(), server_random].concat(),
+        20,
+    )
+}
+
+#[test]
+fn abbreviated_exchange_with_empty_vectors_matches_independent_wap_199_finished() {
+    let servers =
+        ResumableServer::new(identity(), NonZeroUsize::MIN, NonZeroU64::new(100).unwrap());
+    let (mut client, _) = peers(SUBJECT);
+    let mut server = servers.peer(NOW).unwrap();
+    let offer = send(&client.start(0).unwrap());
+    let offer_records = decode_datagram(&offer).unwrap();
+    let full_offer = decode_client_hello(offer_records[0].fragment).unwrap();
+    let reply = send(&server.receive(&offer, 1).unwrap());
+    let reply_records = decode_datagram(&reply).unwrap();
+    let full_selection = decode_server_hello(reply_records[0].fragment).unwrap();
+    let commit = send(&client.receive(&reply, 2).unwrap());
+
+    // Unwrap the full handshake's premaster with this fixture's private key.
+    let commit_records = decode_datagram(&commit).unwrap();
+    let Message::ClientKeyExchange(exchange) =
+        decode_handshake(commit_records[0].fragment).unwrap()
+    else {
+        panic!("expected RSA key exchange")
+    };
+    let key = &keys().1;
+    let mut secret = vec![0; key.size() as usize];
+    let length = key
+        .private_decrypt(&exchange, &mut secret, Padding::PKCS1)
+        .unwrap();
+    assert_eq!(length, 20);
+    let master = fixture_master(
+        &secret[..length],
+        &full_offer.random,
+        &full_selection.random,
+    );
+    let actions = server.receive(&commit, 3).unwrap();
+    assert!(actions.contains(&WireAction::Established(HandshakeKind::Full)));
+    client.receive(&send(&actions), 4).unwrap();
+    let closing = send(&client.close(CloseScope::Connection).unwrap());
+    assert!(
+        server
+            .receive(&closing, 5)
+            .unwrap()
+            .contains(&WireAction::Closed(CloseScope::Connection))
+    );
+
+    // The remote client changes the hello and offers no key exchange or trust IDs.
+    // It also proposes key refresh at every record.
+    let client_hello = offered_hello(
+        full_selection.session_id,
+        &[0, 0, 0, 0, 2, 6, 3, 1, 0, 2, 0],
+    );
+    let offer = encode_datagram(&[clear_record(RecordType::Handshake, 0, &client_hello)]).unwrap();
+    let mut server = servers.peer(NOW).unwrap();
+    let reply = send(&server.receive(&offer, 10).unwrap());
+    let records = decode_datagram(&reply).unwrap();
+    let [server_hello, ccs, ciphertext] = records.as_slice() else {
+        panic!("expected ServerHello, CCS, Finished")
+    };
+    let selected = decode_server_hello(server_hello.fragment).unwrap();
+    assert_eq!(selected.session_id, full_selection.session_id);
+    assert_ne!(selected.random, full_selection.random);
+    assert_ne!(NONCANONICAL_RANDOM, full_offer.random);
+    assert_eq!(selected.key_exchange_index, 0);
+    assert_eq!(selected.key_refresh, 0);
+    assert_eq!(ccs.content_type, RecordType::ChangeCipherSpec);
+    assert_eq!(
+        (ciphertext.cipher_spec, ciphertext.sequence),
+        (CipherSpec::Current, 0)
+    );
+
+    let mut transcript = [client_hello.as_slice(), server_hello.fragment].concat();
+    let server_finished = handshake_fragment(
+        20,
+        &expected_prf(&master, b"server finished", &sha1(&transcript), 12),
+    );
+    assert_eq!(
+        ciphertext.fragment,
+        expected_ciphertext(
+            Record {
+                fragment: &server_finished,
+                ..*ciphertext
+            },
+            &master,
+            b"server expansion",
+            &NONCANONICAL_RANDOM,
+            &selected.random,
+            0,
+        ),
+    );
+    transcript.extend_from_slice(&server_finished);
+    let client_finished = handshake_fragment(
+        20,
+        &expected_prf(&master, b"client finished", &sha1(&transcript), 12),
+    );
+    let mut finished = Record {
+        cipher_spec: CipherSpec::Current,
+        ..clear_record(RecordType::Handshake, 0, &client_finished)
+    };
+    let sealed = expected_ciphertext(
+        finished,
+        &master,
+        b"client expansion",
+        &NONCANONICAL_RANDOM,
+        &selected.random,
+        0,
+    );
+    finished.fragment = &sealed;
+    let commit = encode_datagram(&[
+        clear_record(RecordType::ChangeCipherSpec, 1, &[1]),
+        finished,
+    ])
+    .unwrap();
+    assert_eq!(
+        server.receive(&commit, 11).unwrap(),
+        [WireAction::Established(HandshakeKind::Resumed)]
+    );
+
+    let data = send(&server.send_application(b"reply".to_vec()).unwrap());
+    let records = decode_datagram(&data).unwrap();
+    assert_eq!(records[0].sequence, 1);
+    assert_eq!(
+        records[0].fragment,
+        expected_ciphertext(
+            Record {
+                fragment: b"reply",
+                ..records[0]
+            },
+            &master,
+            b"server expansion",
+            &NONCANONICAL_RANDOM,
+            &selected.random,
+            1,
+        ),
     );
 }
 

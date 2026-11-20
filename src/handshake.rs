@@ -239,6 +239,18 @@ impl Handshake {
         }
     }
 
+    /// Supply a cache lookup made on the transport's clock before the first flight.
+    pub(crate) fn set_idle_cached_session(
+        &mut self,
+        cached: Option<SessionId>,
+    ) -> Result<(), HandshakeError> {
+        if !matches!(self.state, State::Idle) {
+            return Err(HandshakeError::InvalidState);
+        }
+        self.cached_session = cached;
+        Ok(())
+    }
+
     fn new(config: Config, cached_session: Option<SessionId>) -> Self {
         Self {
             config,
@@ -357,8 +369,8 @@ impl Handshake {
             (_, State::ClientCommit(commit)) => client_commit(commit, datagram, finished),
             (_, State::ServerCommit(commit)) => server_commit(commit, datagram, finished),
             (_, State::Open(open)) => {
-                if let [Message::Alert(Alert::CloseNotify(scope))] = datagram {
-                    return self.close(*scope);
+                if let Some(scope) = open.received_close(datagram) {
+                    return self.close(scope);
                 }
                 return open.receive(datagram);
             }
@@ -367,7 +379,11 @@ impl Handshake {
         };
 
         match result {
-            Ok((state, actions)) => {
+            Ok((state, mut actions)) => {
+                let close = match &state {
+                    Some(State::Open(open)) => open.received_close(datagram),
+                    _ => None,
+                };
                 if let Some(state) = state {
                     self.state = state;
                 }
@@ -375,6 +391,9 @@ impl Handshake {
                     if let Action::Established { session, .. } = action {
                         self.cached_session = Some(*session);
                     }
+                }
+                if let Some(scope) = close {
+                    actions.extend(self.close(scope)?);
                 }
                 Ok(actions)
             }
@@ -397,17 +416,16 @@ impl Handshake {
     /// Both locally initiated and peer-initiated closure send one notification.
     /// The closed association ignores replies and any late application data.
     pub fn close(&mut self, scope: CloseScope) -> Result<Vec<Action>, HandshakeError> {
-        if !matches!(self.state, State::Open(_)) {
+        let State::Open(open) = &self.state else {
             return Err(HandshakeError::InvalidState);
-        }
+        };
+        let mut datagram = open.unconfirmed_commit();
+        datagram.push(Message::Alert(Alert::CloseNotify(scope)));
         self.state = State::Closed;
         if scope == CloseScope::Session {
             self.cached_session = None;
         }
-        Ok(vec![
-            alert(Alert::CloseNotify(scope)),
-            Action::Closed(scope),
-        ])
+        Ok(vec![Action::Send(datagram), Action::Closed(scope)])
     }
 }
 
@@ -591,12 +609,16 @@ fn server_commit(
                 rest @ ..,
             ],
         ) => {
-            let data = application_tail(rest)?;
-            verify_finished(finished, Role::Client, &commit.transcript, proof)?;
             let mut open = Open::new(OpenSide::ResumedServer {
                 hello: commit.hello.clone(),
                 peer_commit: vec![ccs.clone(), peer_finished.clone()],
             });
+            let data = if open.received_close(incoming).is_some() {
+                None
+            } else {
+                application_tail(rest)?
+            };
+            verify_finished(finished, Role::Client, &commit.transcript, proof)?;
             let mut actions = vec![established(HandshakeKind::Resumed, commit.session)];
             open.deliver(data, &mut actions);
             Ok((Some(State::Open(open)), actions))
@@ -687,15 +709,32 @@ impl Open {
             u16::try_from(self.next_sequence).map_err(|_| HandshakeError::SequenceExhausted)?;
         self.next_sequence += 1;
 
-        let mut datagram = match &self.side {
+        let mut datagram = self.unconfirmed_commit();
+        datagram.push(Message::ApplicationData { sequence, payload });
+        Ok(vec![Action::Send(datagram)])
+    }
+
+    fn unconfirmed_commit(&self) -> Datagram {
+        match &self.side {
             OpenSide::ResumedClient {
                 commit,
                 confirmed: false,
             } => commit.outgoing.clone(),
             _ => Vec::new(),
+        }
+    }
+
+    fn received_close(&self, incoming: &[Message]) -> Option<CloseScope> {
+        let tail = match &self.side {
+            OpenSide::ResumedServer { peer_commit, .. } => incoming
+                .strip_prefix(peer_commit.as_slice())
+                .unwrap_or(incoming),
+            _ => incoming,
         };
-        datagram.push(Message::ApplicationData { sequence, payload });
-        Ok(vec![Action::Send(datagram)])
+        match tail {
+            [Message::Alert(Alert::CloseNotify(scope))] => Some(*scope),
+            _ => None,
+        }
     }
 
     fn receive(&mut self, incoming: &[Message]) -> Result<Vec<Action>, HandshakeError> {

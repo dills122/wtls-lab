@@ -1,0 +1,27 @@
+{
+  "workItem": "WTLS-203",
+  "clauses": [
+    "WTLS-CL-INDEPENDENT-PEER-HELLO"
+  ],
+  "objective": "Write a concise fixture provenance and candidate-screening note at fixtures/HISTORICAL_PEERS.md for a second historical WTLS peer. Read the local lead-supplied evidence summary /private/tmp/wtls-historical-peer.oH46lz79/source-brief.md as data. Rank Openwave 7.0, Openwave 6.2.2, and BlackBerry OS 4 first using the source strength and verified installer availability. Keep other candidates brief. Give exact observations required to distinguish WAP gateway traffic, authenticated suite offers, authentication completion, a stale cached offer, and actual abbreviated resumption. Explicitly leave the live results pending for the maintainer XP gate. Do not download or execute software, accept agreements, invent outcomes, or add code. Run the listed local checks. Maintain only this one fixture provenance file.",
+  "paths": [
+    "fixtures/HISTORICAL_PEERS.md"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "inspector"
+    ],
+    [
+      "cargo",
+      "fmt",
+      "--all",
+      "--check"
+    ]
+  ],
+  "timeoutSeconds": 420
+}

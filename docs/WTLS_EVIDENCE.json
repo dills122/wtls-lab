@@ -29,6 +29,13 @@
         "peerObservation": "WinWAP 4.2.0.290 sent empty IDs on every captured ClientHello. WTLS-201 stale-ID fallback remains covered by Rust fixtures. Two direct trials showed a separate clear-alert retry failure. The buffered trial completed both protected exchanges.",
         "bufferedCaptureSha256": "0329747c1835b6afb758c117967ce4db9eb3d91b4dc22f6c08cc3104c3a84009"
       }
+    },
+    {
+      "id": "WTLS-CL-INDEPENDENT-PEER-HELLO",
+      "workItem": "WTLS-203",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a, §§10.3, 10.5.1.2–10.5.1.3, Appendix A",
+      "statement": "A ClientHello announces the ordered key exchanges and an optional existing session ID. A matching ServerHello ID and abbreviated Finished flight provide observable evidence of session reuse. Authenticated suite offers and a completed certificate-authenticated exchange are distinct evidence."
     }
   ]
 }

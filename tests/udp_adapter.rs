@@ -1,5 +1,5 @@
 use std::collections::VecDeque;
-use std::net::SocketAddr;
+use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::num::{NonZeroU64, NonZeroUsize};
 
 use openssl::rsa::Rsa;
@@ -7,13 +7,16 @@ use wtls_lab::handshake::{HandshakeKind, RetryPolicy, Status};
 use wtls_lab::udp::{Adapter, Diagnostic, Event};
 use wtls_lab::wire::{
     DatagramBudget, ResumableClient, ResumableServer, ServerIdentity, TrustAnchor,
-    issue_certificate,
+    decode_server_hello, issue_certificate,
 };
+use wtls_lab::{CipherSpec, RecordType, decode_datagram};
 
 const WALL: u32 = 1_730_000_000;
 const ISSUER: &str = "WTLS Lab CA; WTLS Lab; CA";
 const SUBJECT: &str = "Echo; WTLS Lab; CA; echo.lab.invalid";
 const PAYLOAD: &[u8] = b"protected UDP echo";
+const CLIENT_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 49152));
+const SERVER_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9203));
 
 fn contexts() -> (ResumableClient, ResumableServer) {
     let ca = Rsa::generate(2048).unwrap();
@@ -77,6 +80,151 @@ fn established(events: &[Event], expected: SocketAddr, kind: HandshakeKind) -> b
         matches!(event, Event::Established { remote, kind: actual }
             if *remote == expected && *actual == kind)
     })
+}
+
+fn open_protected_association(link: &mut Link) -> (Adapter, Adapter) {
+    let (clients, servers) = contexts();
+    let mut client = adapter(None, 1);
+    let mut server = adapter(Some(servers), 1);
+
+    link.send(client.connect(SERVER_ADDR, &clients, WALL, 0));
+    let hello = link.take(SERVER_ADDR);
+    link.send(server.receive(CLIENT_ADDR, &hello, WALL, 1));
+    let flight = link.take(CLIENT_ADDR);
+    let records = decode_datagram(&flight).unwrap();
+    let selection = decode_server_hello(records[0].fragment).unwrap();
+    assert_eq!(selection.sequence_mode, 2);
+    assert_eq!(selection.key_refresh, 3); // 2^3 = 8 protected records per key block.
+
+    link.send(client.receive(SERVER_ADDR, &flight, WALL, 2));
+    let commit = link.take(SERVER_ADDR);
+    let events = server.receive(CLIENT_ADDR, &commit, WALL, 3);
+    assert!(established(&events, CLIENT_ADDR, HandshakeKind::Full));
+    link.send(events);
+    let commit = link.take(CLIENT_ADDR);
+    let events = client.receive(SERVER_ADDR, &commit, WALL, 4);
+    assert!(established(&events, SERVER_ADDR, HandshakeKind::Full));
+    assert_eq!(client.status(SERVER_ADDR), Some(Status::Open));
+    assert_eq!(server.status(CLIENT_ADDR), Some(Status::Open));
+    (client, server)
+}
+
+fn protected_application(
+    link: &mut Link,
+    sender: &mut Adapter,
+    destination: SocketAddr,
+    sequence: u16,
+) -> Vec<u8> {
+    link.send(sender.send_application(destination, sequence.to_be_bytes().to_vec()));
+    let datagram = link.take(destination);
+    let records = decode_datagram(&datagram).unwrap();
+    let [record] = records.as_slice() else {
+        panic!("expected one protected application record: {records:?}");
+    };
+    assert_eq!(record.content_type, RecordType::ApplicationData);
+    assert_eq!(record.cipher_spec, CipherSpec::Current);
+    assert_eq!(record.sequence, sequence);
+    datagram
+}
+
+fn assert_application_delivery(events: Vec<Event>, source: SocketAddr, sequence: u16) {
+    let [Event::Deliver { remote, payload }] = events.as_slice() else {
+        panic!("expected one delivery of record {sequence} from {source}");
+    };
+    assert_eq!(*remote, source);
+    assert_eq!(payload.as_slice(), sequence.to_be_bytes());
+}
+
+// WAP-199-WTLS-20000218-a, §§9.2.3.1, 11.2 and Appendix B.3.
+// Explicit record sequences select the key block. WTLS leaves reliable,
+// ordered application delivery to the upper layer.
+#[test]
+fn protected_udp_reordering_and_duplicates_across_key_refresh() {
+    let mut link = Link::default();
+    let (mut client, mut server) = open_protected_association(&mut link);
+    let mut now = 10;
+
+    for (source, destination) in [(CLIENT_ADDR, SERVER_ADDR), (SERVER_ADDR, CLIENT_ADDR)] {
+        let (sender, receiver) = if source == CLIENT_ADDR {
+            (&mut client, &mut server)
+        } else {
+            (&mut server, &mut client)
+        };
+        for sequence in 1..=6 {
+            let datagram = protected_application(&mut link, sender, destination, sequence);
+            assert_application_delivery(
+                receiver.receive(source, &datagram, WALL, now),
+                source,
+                sequence,
+            );
+            now += 1;
+        }
+
+        let older = protected_application(&mut link, sender, destination, 7);
+        let newer = protected_application(&mut link, sender, destination, 8);
+        assert_application_delivery(receiver.receive(source, &newer, WALL, now), source, 8);
+        assert_application_delivery(receiver.receive(source, &older, WALL, now + 1), source, 7);
+        now += 2;
+        for (sequence, duplicate) in [(8, newer), (7, older)] {
+            let events = receiver.receive(source, &duplicate, WALL, now);
+            assert!(
+                events.is_empty(),
+                "duplicate record {sequence} from {source} produced {} events",
+                events.len()
+            );
+            now += 1;
+        }
+    }
+}
+
+#[test]
+fn protected_udp_loss_of_first_refreshed_record_does_not_block_delivery() {
+    let mut link = Link::default();
+    let (mut client, mut server) = open_protected_association(&mut link);
+    let mut now = 10;
+
+    for (source, destination) in [(CLIENT_ADDR, SERVER_ADDR), (SERVER_ADDR, CLIENT_ADDR)] {
+        let (sender, receiver) = if source == CLIENT_ADDR {
+            (&mut client, &mut server)
+        } else {
+            (&mut server, &mut client)
+        };
+        for sequence in 1..=7 {
+            let datagram = protected_application(&mut link, sender, destination, sequence);
+            assert_application_delivery(
+                receiver.receive(source, &datagram, WALL, now),
+                source,
+                sequence,
+            );
+            now += 1;
+        }
+
+        drop(protected_application(&mut link, sender, destination, 8));
+        assert_eq!(sender.deadline(), None);
+        assert_eq!(receiver.deadline(), None);
+        now += 100; // Advance past the handshake retry interval with record 8 lost.
+        assert!(sender.tick(now).is_empty());
+        assert!(receiver.tick(now).is_empty());
+
+        let later = protected_application(&mut link, sender, destination, 9);
+        assert_application_delivery(receiver.receive(source, &later, WALL, now), source, 9);
+        // Check for a timer while the gap is visible and before any further delivery.
+        assert_eq!(sender.deadline(), None);
+        assert_eq!(receiver.deadline(), None);
+        now += 100;
+        assert!(sender.tick(now).is_empty());
+        assert!(receiver.tick(now).is_empty());
+
+        let subsequent = protected_application(&mut link, sender, destination, 10);
+        assert_application_delivery(
+            receiver.receive(source, &subsequent, WALL, now + 1),
+            source,
+            10,
+        );
+        now += 2;
+        assert_eq!(sender.deadline(), None);
+        assert_eq!(receiver.deadline(), None);
+    }
 }
 
 #[test]

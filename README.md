@@ -113,6 +113,12 @@ diagnostic and applies its datagram budget to the reply. The existing
 `receive` method exposes the diagnostic-only result.
 [Certificate alert behavior and tests](docs/WAP_199_CERTIFICATE_ALERT_PLAN.md)
 
+The authenticated gateway sends a clear fatal `handshake_failure` when
+an admissible opening offer needs a full handshake and has no usable
+RSA choice or matching cipher/MAC pair. The alert covers the exact
+ClientHello record and leaves any incumbent pending association intact.
+[Algorithm mismatch behavior and tests](docs/WAP_199_ALGORITHM_MISMATCH_ALERT_PLAN.md)
+
 ## Connection reporting for adapters
 
 Use `WirePeer::status()` while driving the handshake and `WirePeer::connection_info()` after establishment. It reports the WAP-199 negotiated identifiers and the verification performed on the remote identity from that endpoint. In this profile the client verifies the server certificate and the server has no authenticated client identity.

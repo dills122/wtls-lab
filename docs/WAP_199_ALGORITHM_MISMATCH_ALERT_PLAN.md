@@ -1,11 +1,11 @@
 # WAP-199 server alert for unmatched algorithms
 
-**WTLS-222 · Proposed after read-only Ruflo review.** Baseline `c6ceb2f`.
+**WTLS-222 · Verified at `036ce51`.**
 This slice covers the authenticated UDP server's response to an otherwise
 admissible opening ClientHello when it cannot choose the fixed RSA
 profile and cannot use a compatible verified session.
 [Support promise review](WAP_199_SUPPORT_PROMISE_REVIEW.md) ·
-[Current selection](../src/wire.rs#L684)
+[Current selection](../src/wire.rs#L686)
 
 ## WAP-199 rule
 
@@ -20,11 +20,11 @@ one MAC. An offer has to contain the supported pair together.
 
 The selected full profile uses unrestricted RSA (8) with default
 parameters and the exact 3DES-CBC-EDE (6) and full SHA MAC (3) pair.
-The current selector reports `UnsupportedProfile` for several kinds
-of refusal. Identify algorithm selection failure distinctly, so that
-the alert applies after the appropriate admission and cache checks.
+Opening profile failures return `UnsupportedProfile`. A full algorithm
+selection failure produces the alert after the admission, cache and
+authority decisions.
 [Current profile and selector](../src/wire/codec.rs#L24) ·
-[Key-exchange and record choice checks](../src/wire/codec.rs#L78)
+[Key-exchange and record choice checks](../src/wire/codec.rs#L80)
 
 ## Decision order
 
@@ -86,8 +86,8 @@ level 3, description 40, and the §10.2 checksum computed from the complete
 received ClientHello record, including its actual header and length form.
 The initial server reply path already supplies the checksum for other
 negotiation refusals.
-[Initial server reply](../src/wire.rs#L449) ·
-[Initial alert values](../src/wire/codec.rs#L519) ·
+[Initial server reply](../src/wire.rs#L451) ·
+[Initial alert values](../src/wire/codec.rs#L533) ·
 [WAP-199 §§10.2–10.2.2](https://ptacts.uspto.gov/ptacts/public-informations/petitions/1549804/download-documents?artifactId=q91LjyqB9tLZ-LVakpTsgAE_GyThWnjP3JSk0xnVhQkx_FB33j7C-1I#page=44)
 
 The rejected offer produces no ServerHello, certificate, traffic keys,
@@ -110,13 +110,13 @@ the existing dispatch.
 [WinWAP fixture tests](../tests/legacy_winwap.rs#L87) ·
 [WinWAP runner](../src/bin/wtls-winwap-lab.rs#L70)
 
-## Deterministic tests for review
+## Deterministic tests
 
 Use in-memory wire peers or the UDP adapter with fixed clocks and
 locally encoded, ordinary offers. Verify the record bytes and observable
-events. Begin with a test that exposes the current diagnostic-only result
-for a valid offer that lacks the supported pair.
-[Existing negative-offer test](../tests/protected_echo.rs#L523)
+events. The first regression reproduced the prior local error
+for a valid offer that lacked the supported pair.
+[Existing negative-offer test](../tests/protected_echo.rs#L699)
 
 | Case | Acceptance evidence |
 | --- | --- |
@@ -126,6 +126,10 @@ for a valid offer that lacks the supported pair.
 | Cache and authority precedence | A compatible hit resumes with index 0 when the RSA list is absent or lacks a usable entry. A cipher-incompatible hit cannot resume. A resume-only miss with a conflicting authority still receives critical 52. A compatible hit with a conflicting authority and an inadmissible full algorithm offer each receive fatal 40. Verify that an eligible cached ID still resumes under its original expiry. A cold or expired cache with a usable full offer establishes with a different ID. |
 | Pending tuple and capacity | With capacity one, keep A pending, send an otherwise valid fresh B with mismatched algorithms from the same tuple, and observe B's alert and A's unchanged deadline. Retry A byte for byte, complete its handshake, and pass protected data. Keep the capacity, same-random conflict, and established-tuple controls. |
 
-The selection boundary, reply policy, and tests are proposed for
-approval before implementation.
+Ruflo reviewed the exact implementation commit after all 145 Rust tests,
+Clippy, and formatting passed.
+[Admission and idle-state tests](../src/wire/algorithm_alert_tests.rs#L16) ·
+[Wire framing and selection tests](../tests/protected_echo.rs#L542) ·
+[Cache and authority tests](../tests/provisioned_trust.rs#L639) ·
+[Pending UDP association test](../tests/udp_adapter.rs#L659) ·
 [Supervised verification](SUPERVISED_WORKFLOW.md#run-the-wtls-loop)

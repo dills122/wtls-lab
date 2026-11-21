@@ -401,9 +401,35 @@
     {
       "id": "WTLS-CL-FULL-SELECTION-HANDSHAKE-FAILURE",
       "workItem": "WTLS-222",
-      "status": "open",
+      "status": "verified",
       "source": "WAP-199-WTLS-20000218-a §§9.2.1, 9.2.3.1, 10.2–10.2.2, 10.4, 10.5.1.2–10.5.1.3, and WAP-199_104 §3.3",
-      "statement": "An admissible initial offer that reaches full authenticated UDP selection and has no usable RSA key exchange or exact supported cipher and MAC pair receives a clear fatal handshake_failure with the ClientHello record checksum. Cache, authority, and pending association rules retain their scoped precedence."
+      "statement": "An admissible initial offer that reaches full authenticated UDP selection and has no usable RSA key exchange or exact supported cipher and MAC pair receives a clear fatal handshake_failure with the ClientHello record checksum. Cache, authority, and pending association rules retain their scoped precedence.",
+      "evidence": {
+        "verifiedCommit": "036ce5147802a8f7e9c5af2a10eb8e4b78ac901d",
+        "claimId": "7ba86dc5cd72487c85f6b9c4d58edaa4",
+        "localReceipt": "ruflo-wtls-loop/7ba86dc5cd72487c85f6b9c4d58edaa4/receipt.json",
+        "maintainerVerification": "ruflo-wtls-loop/7ba86dc5cd72487c85f6b9c4d58edaa4/maintainer-verification/gates.json",
+        "independentReview": "ruflo-wtls-loop/7ba86dc5cd72487c85f6b9c4d58edaa4/maintainer-verification/review.result.json",
+        "workflow": "The implementation claim was interrupted. The maintainer ran the packet and full local gates and recorded a separate pinned, read-only Ruflo review against the exact implementation commit.",
+        "design": "docs/WAP_199_ALGORITHM_MISMATCH_ALERT_PLAN.md",
+        "tests": [
+          "src/wire/algorithm_alert_tests.rs",
+          "tests/protected_echo.rs",
+          "tests/provisioned_trust.rs",
+          "tests/udp_adapter.rs"
+        ],
+        "scenarios": [
+          "algorithm_alert_keeps_a_pending_association_and_its_cached_session",
+          "algorithm_alert_keeps_invalid_openings_local",
+          "algorithm_alert_keeps_the_key_refresh_cap",
+          "algorithm_alert_refuses_an_ordinary_cipher_mac_mismatch",
+          "algorithm_alert_requires_a_selectable_key_and_an_exact_pair",
+          "algorithm_alert_respects_cache_and_authority_precedence",
+          "wire::algorithm_alert_tests::algorithm_alert_checks_admission_before_cache_access",
+          "wire::algorithm_alert_tests::algorithm_alert_leaves_the_idle_candidate_uncommitted"
+        ],
+        "scope": "Exact Ruflo review and 145 Rust tests. A well-framed authenticated opening that reaches full selection without representable default RSA or the exact supported cipher/MAC pair yields one clear fatal handshake_failure. Wire tests check both input length forms, exact reply bytes, admission, authority and cache precedence. A rejected pending replacement preserves the incumbent deadline and byte-identical flight, and the incumbent completes protected traffic. The legacy WinWAP profile retains its existing behavior."
+      }
     }
   ]
 }

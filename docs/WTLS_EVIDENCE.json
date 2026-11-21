@@ -269,9 +269,20 @@
     {
       "id": "WTLS-CL-HELLO-UNIX-TIME",
       "workItem": "WTLS-217",
-      "status": "open",
+      "status": "verified",
       "source": "WAP-199-WTLS-20000218-a §§10.5.1.2–10.5.1.3, with WAP-199_103 A.1 S-200 (M) and A.2 C-200 (O)",
-      "statement": "The supported Rust client and server encode the exact supplied Unix seconds in the first four bytes of each hello Random on both full and abbreviated handshakes. The independent monotonic millisecond clock drives scheduling and cache timing."
+      "statement": "The supported Rust client and server encode the exact supplied Unix seconds in the first four bytes of each hello Random on both full and abbreviated handshakes. The independent monotonic millisecond clock drives scheduling and cache timing.",
+      "evidence": {
+        "verifiedCommit": "85c601bf02c40085548d198f71e37135f1358900",
+        "claimId": "89db889d7b684904a2dc2cc16611c136",
+        "localReceipt": "ruflo-wtls-loop/89db889d7b684904a2dc2cc16611c136/receipt.json",
+        "tests": "tests/udp_adapter.rs",
+        "scenarios": [
+          "full_handshake_hellos_encode_supplied_unix_time",
+          "resumed_handshake_hellos_encode_supplied_unix_time"
+        ],
+        "scope": "Exact Ruflo review and 110 Rust tests. The deterministic adapter tests check the first four Random bytes in the emitted ClientHello and ServerHello against the exact supplied Unix seconds in both handshake modes. Each sender has its own wall clock, and each uses a different value on resumption. Independent monotonic milliseconds govern the adapter. The abbreviated exchange echoes a cached ID and completes on both endpoints."
+      }
     }
   ]
 }

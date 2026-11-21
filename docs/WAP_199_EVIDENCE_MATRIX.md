@@ -1,7 +1,7 @@
 # WAP-199 client and server evidence matrix
 
 **Evidence baseline.** Live evidence through WTLS-213. Deterministic updates
-for WTLS-215 at `b7d5baf` and WTLS-216 at `e166de4`.
+for WTLS-215 at `b7d5baf`, WTLS-216 at `e166de4`, and WTLS-217 at `85c601b`.
 The [support promise](WAP_199_PROVISIONED_TRUST_PLAN.md#support-boundary) covers
 one server-authenticated UDP profile. It uses unrestricted RSA, a native
 WTLS leaf and one provisioned RSA authority, 3DES-CBC-EDE, full HMAC-SHA-1,
@@ -28,17 +28,17 @@ add live evidence for the Rust server with the stock BlackBerry 7290 as its
 client. BlackBerry's CA enrollment, prompt setting, and persistence are
 observations about that simulator. The [WTLS-213 capture](../fixtures/HISTORICAL_PEERS.md#blackberry-provisioned-trust-reconnect-lifecycle)
 and [work item ledger](WTLS_EVIDENCE.json) retain the peer and run provenance.
-WTLS-216 passed all 108 tests in `cargo test --locked --offline`.
+WTLS-217 passed all 110 tests in `cargo test --locked --offline`.
 
 | Server row | Client row | Requirement | Disposition and evidence |
 | --- | --- | --- | --- |
 | S-001 M | C-001 M | Full handshake (§10.3) | **Verified, both.** Matching provisioned authority, certificate flight, client key exchange, both Finished exchanges, and protected echo. WTLS-213 verifies the server twice with an independent peer. [TRUST-02](../tests/provisioned_trust.rs#L284) |
 | S-002 M | C-002 M | Abbreviated handshake (§10.3) | **Verified, both.** Same-ID abbreviated flight and fresh hello randoms and traffic keys. Cache miss falls back with a usable full offer. WTLS-213 shows the server resumes after Connection close and takes the full path after Session close when the peer reoffers the same ID. [Client random and fresh keys](../tests/wire_resumption.rs#L228) · [Server random](../tests/protected_echo.rs#L444) · [TRUST-06](../tests/provisioned_trust.rs#L535) |
 | S-005 M | C-005 M | Concatenated handshake records in one SDU (§10.4) | **Verified, both.** Distinct records carry each handshake message. Both full commit directions and the server-first abbreviated flight are exercised. The codec checks explicit and final omitted lengths. [Full wire exchange](../tests/protected_echo.rs#L259) · [Abbreviated wire exchange](../tests/protected_echo.rs#L389) · [Record codec](../tests/record_codec.rs#L36) |
-| S-006 M | C-006 M | Handshake reliability over datagrams (§10.4) | **Client verified for the scoped retry paths. Server partial.** The deterministic UDP tests cover a lost ServerHello flight and a lost final full-handshake CCS/Finished flight. Wire tests cover abbreviated commit recovery. Handling a fresh ClientHello during a pending server handshake remains open in [G6](#g6-fresh-clienthello-during-a-pending-handshake). [ServerHello loss](../tests/udp_adapter.rs#L231) · [Final flight loss](../tests/udp_adapter.rs#L281) · [Abbreviated commit recovery](../tests/wire_resumption.rs#L306) |
-| S-010 M | C-010 M | Explicit sequence numbers (§9.2.3.1) | **Verified, both.** Explicit fields and CCS reset are exercised. The codec rejects a missing UDP sequence field. WTLS-215 verifies the last valid number, retirement before wrap, and reuse of the eligible cached session. [G1](#g1-sequence-exhaustion) [Codec rejection](../tests/record_codec.rs#L99) · [Wire echo](../tests/protected_echo.rs#L580) · [UDP sequence assertions](../tests/udp_adapter.rs#L112) |
-| S-012 M | C-012 M | Duplicate removal (§9.2.3.1) | **Verified for protected application records, both.** UDP tests accept in-window reordered records across refresh and suppress repeated delivery in each direction. The typed server test also drops an older record outside the window. [UDP replay test](../tests/udp_adapter.rs#L142) · [Typed window test](../tests/handshake.rs#L371) |
-| S-013 M | C-013 M | Key refresh (Appendix B.3) | **Verified, both.** Independent ciphertext expectations cover the refresh boundary. UDP tests cross it in both directions with loss or reordering. [Wire vectors](../tests/protected_echo.rs#L259) · [UDP refresh tests](../tests/udp_adapter.rs#L142) |
+| S-006 M | C-006 M | Handshake reliability over datagrams (§10.4) | **Client verified for the scoped retry paths. Server partial.** The deterministic UDP tests cover a lost ServerHello flight and a lost final full-handshake CCS/Finished flight. Wire tests cover abbreviated commit recovery. Handling a fresh ClientHello during a pending server handshake remains open in [G6](#g6-fresh-clienthello-during-a-pending-handshake). [ServerHello loss](../tests/udp_adapter.rs#L334) · [Final flight loss](../tests/udp_adapter.rs#L384) · [Abbreviated commit recovery](../tests/wire_resumption.rs#L306) |
+| S-010 M | C-010 M | Explicit sequence numbers (§9.2.3.1) | **Verified, both.** Explicit fields and CCS reset are exercised. The codec rejects a missing UDP sequence field. WTLS-215 verifies the last valid number, retirement before wrap, and reuse of the eligible cached session. [G1](#g1-sequence-exhaustion) [Codec rejection](../tests/record_codec.rs#L99) · [Wire echo](../tests/protected_echo.rs#L580) · [UDP sequence assertions](../tests/udp_adapter.rs#L215) |
+| S-012 M | C-012 M | Duplicate removal (§9.2.3.1) | **Verified for protected application records, both.** UDP tests accept in-window reordered records across refresh and suppress repeated delivery in each direction. The typed server test also drops an older record outside the window. [UDP replay test](../tests/udp_adapter.rs#L245) · [Typed window test](../tests/handshake.rs#L371) |
+| S-013 M | C-013 M | Key refresh (Appendix B.3) | **Verified, both.** Independent ciphertext expectations cover the refresh boundary. UDP tests cross it in both directions with loss or reordering. [Wire vectors](../tests/protected_echo.rs#L259) · [UDP refresh tests](../tests/udp_adapter.rs#L245) |
 | S-020 M | C-020 M | Critical alerts (§10.2) | **Partial, both.** Protected Connection close preserves the cache. The authenticated generic critical receive case is exercised with the Rust client as receiver. See [G3](#g3-alert-scope). [Client-initiated close](../tests/wire_resumption.rs#L705) · [Server-initiated close](../tests/wire_resumption.rs#L786) · [Generic critical test](../src/wire/alert_tests.rs#L254) |
 | S-021 M | C-021 M | Fatal alerts (§10.2) | **Partial, both.** Protected Session close invalidates the session. Generic fatal receive behavior is covered on committed epochs, including a resumed client awaiting confirmation. The server emits a clear fatal alert for an unmatched authority. Clear receive behavior and provisional epochs follow the lab alert policy. See [G3](#g3-alert-scope). [TRUST-03](../tests/provisioned_trust.rs#L400) · [Fatal receive tests](../src/wire/alert_tests.rs#L138) · [Provisional epoch test](../src/wire/alert_tests.rs#L471) |
 | S-022 M | C-022 M | Alert checksums (§10.2) | **Partial, both.** Protected checksum matching, corrupted checksums, and close checksums referencing earlier sent records are exercised. TRUST-03 checks the checksum on an outbound clear fatal alert. Clear inbound reports lack this check. See [G3](#g3-alert-scope). [Outbound checksum assertion](../tests/provisioned_trust.rs#L149) · [Protected checksum tests](../src/wire/alert_tests.rs#L254) · [Earlier-record close](../tests/wire_resumption.rs#L782) |
@@ -53,7 +53,7 @@ WTLS-216 passed all 108 tests in `cargo test --locked --offline`.
 | S-131 M | C-131 M | Full SHA MAC (Appendix A) | **Verified, both.** Selected as MAC 3. The test independently computes HMAC-SHA-1 for the protected record vector. [Independent expectations](../tests/protected_echo.rs#L201) · [Wire vectors](../tests/protected_echo.rs#L259) |
 | S-141 M | C-141 M | Null compression (Appendix A) | **Verified, both.** Compression 0 negotiated and used for the protected echo. [Client offer](../tests/protected_echo.rs#L109) · [Server selection](../tests/protected_echo.rs#L129) · [Wire echo](../tests/protected_echo.rs#L580) |
 | S-191 O | C-191 O | Native WTLS certificate verification (§10.5.2) | **Verified within the profile, both.** Conditional requirement via 060. Rust server validates its configured signed leaf and key before use. Rust client independently checks the issuer, signature, expected subject, and validity of the received leaf. Client-certificate verification is a separate feature. [TRUST-02](../tests/provisioned_trust.rs#L284) · [TRUST-05](../tests/provisioned_trust.rs#L454) |
-| S-200 M | C-200 O | GMT Unix time support (§10.5.1) | **Partial, both.** The shared hello generator writes caller-supplied Unix seconds as four big-endian bytes, followed by 12 random bytes. The client codec vector prescribes bytes rather than exercising the clock-to-wire path. See [G5](#g5-gmt-time-on-the-wire). [Hello generator](../src/wire.rs#L1100) · [Client codec vector](../tests/protected_echo.rs#L109) |
+| S-200 M | C-200 O | GMT Unix time support (§10.5.1) | **Verified, both.** Full and abbreviated ClientHello and ServerHello carry the supplied Unix seconds in the first four Random bytes. The UDP tests use a separate monotonic clock and exercise fresh wall times on resumption. [G5](#g5-gmt-time-on-the-wire) |
 
 ## Other corrected rows
 
@@ -109,7 +109,7 @@ protected Finished datagram in a full handshake. At the retry deadline
 the client resends its entire commit byte for byte. The open server repeats
 its original final flight and emits no second establishment event. The
 client opens and exchanges a protected echo on the recovered connection.
-[Deterministic UDP test](../tests/udp_adapter.rs#L281) · [Evidence ledger](WTLS_EVIDENCE.json)
+[Deterministic UDP test](../tests/udp_adapter.rs#L384) · [Evidence ledger](WTLS_EVIDENCE.json)
 
 ### G3. Alert scope
 
@@ -135,11 +135,14 @@ restriction. The observed BlackBerry exchanges use the supported path. [Open rec
 
 ### G5. GMT time on the wire
 
-Assert the exact supplied wall-clock value in emitted client and server
-hellos. Exercise full and resumed negotiation, with a distinct monotonic
-time to rule out mixing the two clocks. This is an evidence gap for an
-existing implementation, with mandatory status on the server and optional
-status on the client. [Wire hello generator](../src/wire.rs#L1100)
+**Verified in WTLS-217.** Deterministic adapter tests compare the exact
+four big-endian wire bytes of each hello's Unix timestamp to that sender's
+supplied wall clock. Both peers establish the full and abbreviated
+handshakes. The abbreviated handshake echoes the cached session ID and
+uses a new wall-clock value for each role. The monotonic millisecond values
+are independent of the wall-clock inputs. The corrected status is mandatory
+for the server and optional for the client.
+[Full hello timestamp test](../tests/udp_adapter.rs#L145) · [Resumed hello timestamp test](../tests/udp_adapter.rs#L155) · [Evidence ledger](WTLS_EVIDENCE.json)
 
 ### G6. Fresh ClientHello during a pending handshake
 
@@ -152,5 +155,5 @@ that the duplicate path still returns the original flight. Handling
 handshakes initiated on an established connection is a separate question.
 [UDP routing](../src/udp.rs#L223) · [Wire receive state](../src/wire.rs#L733)
 
-G5 can start with a test of the current implementation. G3 and G4 need an explicit scope decision. G6 is a
+G3 and G4 need an explicit scope decision. G6 is a
 separate server-side lifecycle gap.

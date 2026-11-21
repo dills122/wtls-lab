@@ -1,0 +1,43 @@
+{
+  "workItem": "WTLS-215",
+  "clauses": [
+    "WTLS-CL-SEQUENCE-EXHAUSTION"
+  ],
+  "objective": "Implement the reviewed docs/WAP_199_SEQUENCE_EXHAUSTION_PLAN.md and G1 only. Use test-driven development: capture a failing behavioral test before modifying protocol logic, report red/green. Test provisioned authenticated Rust client and server as sender. Sequence 65535 is usable; the next valid operation needing a fresh number emits no datagram, returns WireError::Handshake(HandshakeError::SequenceExhausted), closes the peer and releases connection-local traffic/retry/replay/flight/checksum state. The wire write counter is authoritative for mixed application/alert records. Reuse existing encode, abort/release, and Adapter::drive retirement semantics. Keep the typed Handshake consistent on exhaustion, and preserve existing receive-side error classification when practical. Avoid public API additions. Pure cached exact retransmissions while open and abbreviated CCS/Finished prefixes reuse their bytes; fresh application or alert suffix needs a sequence, and failure emits no prefix by itself. Adapter returns its existing Diagnostic::Protocol and removes the local slot. Automatic exhaustion preserves the exact eligible shared cache entry and original expiry. Prove each sender role can resume the same ID on a fresh association with fresh keys and protected application delivery. An explicit local Session close while associated and an authenticated peer Session close invalidate the exact local entry even if the close/ack cannot be encoded. Verified fatal and critical handling remain as before. No automatic re-open of an active UDP tuple, reservation of final sequence, wrap, automatic renegotiation, clear fallback, or open-ended legacy changes. Use in-memory deterministic tests with private near-limit seeding where helpful. Verify role symmetry, original lifetime, typed mixed alert path, atomic prefixes, removal/slot reuse and invalidation. Use test names containing sequence_exhaustion for core cases, keep any test hooks private or cfg(test), and reuse fixtures. Keep scope in the assigned worktree, no live peers. No product docs or ledger edits by the worker. The maintainer updates evidence after verification.",
+  "paths": [
+    "src/handshake.rs",
+    "src/wire.rs",
+    "src/wire/sequence_tests.rs",
+    "src/udp.rs",
+    "src/udp/sequence_tests.rs",
+    "tests/handshake.rs",
+    "tests/udp_adapter.rs",
+    "tests/wire_resumption.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "sequence_exhaustion"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "wire_resumption"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "udp_adapter"
+    ]
+  ],
+  "timeoutSeconds": 720
+}

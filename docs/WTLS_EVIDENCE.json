@@ -224,6 +224,13 @@
         "peerObservation": "The handset reoffered ff638f53df37b626 after both closes. The gateway echoed it after Connection close, and after Session close issued 25ec9d1c3e978698 in a full handshake. Matching protected page acknowledgments were 0fb2, 0161 and 2f75.",
         "scope": "Ruflo plan review and live verification on one isolated stock simulator and one strict gateway process. Native CA enrollment occurred once before the run. Certificate prompts stayed enabled, with no leaf approval. A protected client application record arrived after each close and the gateway discarded it before the next handshake."
       }
+    },
+    {
+      "id": "WTLS-CL-SEQUENCE-EXHAUSTION",
+      "workItem": "WTLS-215",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a §§9.2.3.1, 10.1, 10.2–10.2.2 and 11.1.4, with WAP-199_103 rows S-010/C-010",
+      "statement": "In the provisioned authenticated UDP profile, either endpoint can send sequence 65535 once for a new record. Attempting another new record retires the connection with a typed sequence-exhaustion diagnostic and preserves the eligible session at its original expiry. A distinct verified fatal or explicit/session close still invalidates as applicable."
     }
   ]
 }

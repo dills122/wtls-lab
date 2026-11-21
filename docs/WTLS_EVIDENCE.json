@@ -369,9 +369,34 @@
     {
       "id": "WTLS-CL-CERTIFICATE-REJECTION-ALERT",
       "workItem": "WTLS-221",
-      "status": "open",
+      "status": "verified",
       "source": "WAP-199-WTLS-20000218-a §§9.2.3.1, 10.2–10.2.2, 10.5.2, 10.5.5; WAP-199_103 S/C-020–022; WAP-199_104 and _105",
-      "statement": "The provisioned client returns a typed local certificate rejection and one clear fatal reply for a classified native leaf failure in a complete full server flight. The gateway can retire the pending attempt while eligible verified sessions retain their original expiry."
+      "statement": "The provisioned client returns a typed local certificate rejection and one clear fatal reply for a classified native leaf failure in a complete full server flight. The gateway can retire the pending attempt while eligible verified sessions retain their original expiry.",
+      "evidence": {
+        "verifiedCommit": "32f112a38665492b4fc81e8834e1824273f15006",
+        "claimId": "2a484132b1a64c53aa381617158cd71c",
+        "localReceipt": "ruflo-wtls-loop/2a484132b1a64c53aa381617158cd71c/receipt.json",
+        "maintainerVerification": "ruflo-wtls-loop/2a484132b1a64c53aa381617158cd71c/maintainer-verification/gates.json",
+        "independentReview": "ruflo-wtls-loop/2a484132b1a64c53aa381617158cd71c/maintainer-verification/review.result.json",
+        "workflow": "The Ruflo implementation worker was interrupted. The abandoned claim retained the checkpoints. The maintainer ran the packet and full Cargo gates and a separate pinned, read-only Ruflo review against the exact implementation commit.",
+        "design": "docs/WAP_199_CERTIFICATE_ALERT_PLAN.md",
+        "tests": [
+          "src/udp/certificate_alert_tests.rs",
+          "src/wire/certificate_alert_tests.rs",
+          "tests/provisioned_trust.rs"
+        ],
+        "scenarios": [
+          "certificate_alert_classifies_native_leaves_in_order",
+          "certificate_alert_failed_fallback_preserves_original_cache_expiry",
+          "certificate_alert_is_scoped_to_ordered_well_framed_provisioned_flights",
+          "certificate_alert_trust_05_retires_pending_gateway",
+          "certificate_alert_udp_drop_keeps_pending_deadline_and_inbound_budget",
+          "certificate_alert_uses_exact_lengthless_done_after_identical_retry",
+          "udp::certificate_alert_tests::certificate_alert_outbound_budget_preserves_the_original_diagnostic",
+          "wire::certificate_alert_tests::certificate_alert_provider_failure_returns_diagnostic_only"
+        ],
+        "scope": "Exact Ruflo review and 137 Rust tests. A classified native leaf rejection on the provisioned client's full handshake returns a typed diagnostic and a clear fatal reply. Wire tests cover alert mapping, exact record bytes and checksum, one-shot behavior, and local failures. UDP tests cover delivery, loss, and retirement. A rejected fallback preserves the eligible verified session at its original expiry. The manual and diagnostic-only entry points keep their existing contract."
+      }
     }
   ]
 }

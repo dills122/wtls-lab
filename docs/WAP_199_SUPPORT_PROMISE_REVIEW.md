@@ -1,6 +1,6 @@
 # WAP-199 support promise review after G1–G6
 
-**Decision pending.** Baseline `519b0fa` in `wtls-lab`. The WAP-199
+**Audit baseline.** Baseline `519b0fa` in `wtls-lab`. The WAP-199
 profile covers server-authenticated UDP with unrestricted RSA, one
 provisioned native WTLS authority and leaf, 3DES-CBC-EDE, full HMAC-SHA-1,
 null compression, and explicit record sequence numbers.
@@ -27,14 +27,14 @@ was the 129-test WTLS-220 Cargo run.
 | Service and record surface | The current API exposes datagram, delivery, establishment, close, timeout, and diagnostic events. The WAP service primitive contract, including the §10.4 `SEC-Create.ind` behavior, needs separate design if claimed. G4 covers receive-side application batches and the verified abbreviated prefix. General mixed records, application records on full final flights, and outbound coalescing remain outside its evidence. |
 | Broader conformance and peer options | Full Appendix E conformance would require a qualifying anonymous option per role and verification beyond the selected profile. Concurrent same-session connections are optional under row 004. WAP-261, more suites, additional certificate formats, client authentication, and WIM remain deferred. |
 
-[Certificate rejection path](../src/wire.rs#L418) ·
+[Certificate rejection path](../src/wire.rs#L478) ·
 [TRUST-05](../tests/provisioned_trust.rs#L454) ·
 [Server selection](../src/wire/codec.rs#L133) ·
 [Established tuple policy](WAP_199_PENDING_CLIENT_HELLO_PLAN.md#adapter-behavior) ·
 [BlackBerry lifecycle](../fixtures/HISTORICAL_PEERS.md#blackberry-provisioned-trust-reconnect-lifecycle) ·
 [WAP-199 baseline and corrections](https://www.openmobilealliance.org/tech/affiliates/wap/Technical_June2000-20021106%5B1%5D.zip)
 
-## Recommended next slice
+## Recommended next slice at the audit baseline
 
 **Send a WTLS alert when the provisioned client rejects a gateway
 certificate during a full handshake.** TRUST-05 already reproduces a
@@ -63,8 +63,8 @@ Preserve a typed local trust failure and make the outbound datagram
 available in the same receive outcome. The UDP adapter currently turns
 an error into a diagnostic and emits datagrams from successful wire actions.
 [WAP-199 §§10.2–10.2.2](https://ptacts.uspto.gov/ptacts/public-informations/petitions/1549804/download-documents?artifactId=q91LjyqB9tLZ-LVakpTsgAE_GyThWnjP3JSk0xnVhQkx_FB33j7C-1I#page=44) ·
-[Wire action surface](../src/wire.rs#L124) ·
-[UDP event dispatch](../src/udp.rs#L352)
+[Wire action surface](../src/wire.rs#L161) ·
+[UDP event dispatch](../src/udp.rs#L356)
 
 ### Acceptance for a proposed implementation
 
@@ -86,7 +86,7 @@ an error into a diagnostic and emits datagrams from successful wire actions.
    generation, live historical runs, and same-tuple open recovery out of
    this slice.
 
-The proposed WTLS-221 mapping, receive API, and deterministic tests
-are ready for approval before implementation.
+WTLS-221 implemented and verified this slice. The scoped wire and UDP
+evidence is recorded at `32f112a`.
 [Certificate alert design](WAP_199_CERTIFICATE_ALERT_PLAN.md) ·
 [Supervised verification](SUPERVISED_WORKFLOW.md#run-the-wtls-loop)

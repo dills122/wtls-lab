@@ -1,7 +1,7 @@
 # WAP-199 client and server evidence matrix
 
 **Evidence baseline.** Live evidence through WTLS-213. Deterministic updates
-for WTLS-215 at `b7d5baf`, WTLS-216 at `e166de4`, WTLS-217 at `85c601b`, WTLS-218 at `d12211e`, WTLS-219 at `0d49c5a`, and WTLS-220 at `ff294cb`.
+for WTLS-215 at `b7d5baf`, WTLS-216 at `e166de4`, WTLS-217 at `85c601b`, WTLS-218 at `d12211e`, WTLS-219 at `0d49c5a`, WTLS-220 at `ff294cb`, and WTLS-221 at `32f112a`.
 The [support promise](WAP_199_PROVISIONED_TRUST_PLAN.md#support-boundary) covers
 one server-authenticated UDP profile. It uses unrestricted RSA, a native
 WTLS leaf and one provisioned RSA authority, 3DES-CBC-EDE, full HMAC-SHA-1,
@@ -28,7 +28,7 @@ add live evidence for the Rust server with the stock BlackBerry 7290 as its
 client. BlackBerry's CA enrollment, prompt setting, and persistence are
 observations about that simulator. The [WTLS-213 capture](../fixtures/HISTORICAL_PEERS.md#blackberry-provisioned-trust-reconnect-lifecycle)
 and [work item ledger](WTLS_EVIDENCE.json) retain the peer and run provenance.
-WTLS-220 passed all 129 tests in `cargo test --locked --offline`.
+WTLS-221 passed all 137 tests in `cargo test --locked --offline`.
 
 | Server row | Client row | Requirement | Disposition and evidence |
 | --- | --- | --- | --- |
@@ -123,8 +123,10 @@ fatal or critical error retires that attempt, and a verified cached
 session keeps its original expiry. Clear advisories do not alter
 sequence or retry state. Committed peers reject clear alerts and retain
 protected traffic. The protected alert and close regressions still pass.
-Outbound certificate error generation remains separate.
-[Reviewed policy](WAP_199_CLEAR_ALERT_PLAN.md) · [Alert tests](../src/wire/alert_tests.rs#L167) · [Evidence ledger](WTLS_EVIDENCE.json)
+WTLS-221 verifies classified native certificate failures on the
+provisioned client, including a clear fatal reply and the gateway's
+pending retirement. [Certificate alert design and tests](WAP_199_CERTIFICATE_ALERT_PLAN.md)
+[Reviewed policy](WAP_199_CLEAR_ALERT_PLAN.md) · [Alert tests](../src/wire/alert_tests.rs#L172) · [Evidence ledger](WTLS_EVIDENCE.json)
 
 ### G4. Multiple application records per SDU
 
@@ -140,7 +142,7 @@ content-type interleaving remain outside this profile.
 [Receive design and tests](WAP_199_APPLICATION_RECORD_BATCH_PLAN.md) ·
 [Wire batch tests](../src/wire/application_batch_tests.rs#L51) ·
 [UDP replay and budget](../tests/udp_adapter.rs#L268) ·
-[Alert lifecycle](../src/wire/alert_tests.rs#L454) ·
+[Alert lifecycle](../src/wire/alert_tests.rs#L459) ·
 [Evidence ledger](WTLS_EVIDENCE.json)
 
 ### G5. GMT time on the wire

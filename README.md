@@ -105,6 +105,14 @@ cargo test --locked --offline --test provisioned_trust
 
 [WAP-199 corrections and deterministic gate](docs/WAP_199_PROVISIONED_TRUST_PLAN.md)
 
+A classified native leaf failure in a provisioned full handshake produces
+a typed local rejection and one clear fatal certificate alert. Use
+`WirePeer::receive_with_reply` when a direct wire caller can forward the
+optional reply returned with an error. The UDP adapter reports the
+diagnostic and applies its datagram budget to the reply. The existing
+`receive` method exposes the diagnostic-only result.
+[Certificate alert behavior and tests](docs/WAP_199_CERTIFICATE_ALERT_PLAN.md)
+
 ## Connection reporting for adapters
 
 Use `WirePeer::status()` while driving the handshake and `WirePeer::connection_info()` after establishment. It reports the WAP-199 negotiated identifiers and the verification performed on the remote identity from that endpoint. In this profile the client verifies the server certificate and the server has no authenticated client identity.

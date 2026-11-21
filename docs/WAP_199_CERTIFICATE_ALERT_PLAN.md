@@ -1,14 +1,14 @@
 # WAP-199 outbound certificate rejection alert design
 
-**WTLS-221 · Proposed after read-only Ruflo review.** Use the provisioned
+**WTLS-221 · Verified at `32f112a`.** Use the provisioned
 RSA trust decision to end a pending full handshake at both endpoints.
 This plan covers the opt-in provisioned client processing a complete,
 well-framed, ordered server flight for a fresh session in the clear
 epoch. The native certificate is evaluated after `ServerHelloDone`
-and before key transport. The validated alert should
-let the gateway retire the pending attempt through the G3 path.
+and before key transport. The gateway uses the validated alert to
+retire its pending attempt through the G3 path.
 [Support promise review](WAP_199_SUPPORT_PROMISE_REVIEW.md) ·
-[Certificate rejection today](../src/wire.rs#L418) ·
+[Certificate rejection path](../src/wire.rs#L478) ·
 [G3 receive policy](WAP_199_CLEAR_ALERT_PLAN.md#profile-behavior)
 
 ## Rejection mapping
@@ -22,12 +22,12 @@ typed local certificate rejection and classify the reason internally
 before selecting the on-wire description.
 [WAP-199 §§10.2–10.2.2](https://ptacts.uspto.gov/ptacts/public-informations/petitions/1549804/download-documents?artifactId=q91LjyqB9tLZ-LVakpTsgAE_GyThWnjP3JSk0xnVhQkx_FB33j7C-1I#page=44) ·
 [WAP-199 §§10.5.2, 10.5.5](https://www.openmobilealliance.org/tech/affiliates/wap/Technical_June2000-20021106%5B1%5D.zip) ·
-[Current verifier](../src/wire/certificate.rs#L38)
+[Provisioned verifier](../src/wire/certificate.rs#L51)
 
 | Rejection | WTLS alert and treatment |
 | --- | --- |
 | Corrupt supported native RSA certificate body, including invalid certificate fields | `bad_certificate` (42), if the containing Certificate record and server flight are well framed. |
-| Fully recognizable native RSA leaf exceeds a local key-profile limit | `unsupported_certificate` (43), for an established policy mismatch such as a well-framed otherwise supported-format RSA leaf outside the accepted key-size range. Require enough parsing to distinguish this from corrupt input. |
+| Fully framed native RSA leaf with a modulus outside 1,024–4,096 bits or an exponent wider than 32 bits | `unsupported_certificate` (43) when the key fields are structurally valid. |
 | Parsed native leaf has an issuer absent from the configured trust context | `unknown_ca` (48). The single provisioned issuer is the only match in the selected profile. |
 | Leaf claims the configured issuer and its signature fails validation | `bad_certificate` (42). This includes the same issuer name with a different signing key and a peer-supplied invalid signature encoding. |
 | A trusted, correctly signed leaf has the wrong expected WTLS subject | `certificate_unknown` (46). Treat the identity mismatch as another certificate processing rejection. |
@@ -47,13 +47,13 @@ preserve WTLS `rsa_sha` over the raw SHA-1 digest. Unclassifiable failures
 retain a local diagnostic with no reply. The provisioned opt-in selects
 the new outbound behavior. The existing manual client and local server
 configuration paths keep their current rejection behavior.
-[Certificate body parser](../src/wire/certificate.rs#L166) ·
-[Issuer and signature checks](../src/wire/certificate.rs#L145) ·
+[Certificate body parser](../src/wire/certificate.rs#L277) ·
+[Issuer and signature checks](../src/wire/certificate.rs#L230) ·
 [Certificate envelope decoder](../src/wire/codec.rs#L463)
 
 ## Receive contract
 
-Add `WirePeer::receive_with_reply` returning
+`WirePeer::receive_with_reply` returns
 `Result<Vec<WireAction>, ReceiveError>`. `ReceiveError` carries a typed
 `WireError` and an optional owned reply datagram. A classified trust
 rejection returns `CertificateRejected` and one alert on the error side.
@@ -70,8 +70,8 @@ budget-checked send event when a reply exists. An outbound budget
 failure adds the existing `OutboundTooLarge` diagnostic. It preserves
 the original trust diagnostic. Association retirement remains driven
 by the peer's closed state.
-[Wire action and error types](../src/wire.rs#L65) ·
-[UDP dispatch](../src/udp.rs#L352) ·
+[Receive API](../src/wire.rs#L367) ·
+[UDP dispatch](../src/udp.rs#L356) ·
 [Direct WinWAP consumer](../src/bin/wtls-winwap-lab.rs#L87)
 
 The additive method keeps `WireError` copyable and leaves existing
@@ -93,16 +93,15 @@ its original expiry. The emitted alert is a one-shot response. The
 gateway checks the record sequence and sent-record checksum and retires
 its pending slot without a close-notify acknowledgment. A dropped alert
 leaves the gateway's existing pending deadline in force.
-[Clear alert admission](../src/wire.rs#L752) ·
-[Session release](../src/wire.rs#L1067) ·
-[UDP slot retirement](../src/udp.rs#L316)
+[Clear alert admission](../src/wire.rs#L847) ·
+[Session release](../src/wire.rs#L1162) ·
+[UDP slot retirement](../src/udp.rs#L320)
 
-## Deterministic tests for review
+## Deterministic tests
 
-Use existing in-memory wire peers, the UDP link, and fixed certificate
-and retry clocks. Reuse the local trust fixtures and inspect actual
-returned actions and events. Run one TRUST-05-derived end-to-end
-regression before changing behavior.
+The tests use in-memory wire peers, the UDP link, and fixed certificate
+and retry clocks. The first regression reproduced the missing alert
+after a properly framed server flight containing a rejected leaf.
 [TRUST-05 fixture](../tests/provisioned_trust.rs#L454) ·
 [Existing alert tests](../src/wire/alert_tests.rs) ·
 [UDP tests](../tests/udp_adapter.rs)
@@ -118,6 +117,10 @@ regression before changing behavior.
 
 Broad server negotiation alerts, protection errors after cipher
 activation, alternate certificate support, and live historical-peer
-verification belong to separate work. The mapping, receive result, and
-test expectations are proposed here for approval before implementation.
+verification belong to separate work. Ruflo reviewed the exact
+implementation commit after all 137 Rust tests, Clippy, and formatting
+passed.
+[UDP budget regression](../src/udp/certificate_alert_tests.rs#L4) ·
+[Provider failure regression](../src/wire/certificate_alert_tests.rs#L7) ·
+[Wire and UDP integration tests](../tests/provisioned_trust.rs#L642) ·
 [Supervised verification](SUPERVISED_WORKFLOW.md#run-the-wtls-loop)

@@ -304,6 +304,13 @@
         ],
         "scope": "Exact Ruflo review and 114 Rust tests. Deterministic UDP cases verify same-slot full and abbreviated replacement, byte-identical duplicate replies, rejection of retired and conflicting hellos, the original pending deadline, and protected exchange. Rejected candidates and fresh hellos on established tuples preserve the existing peer. Scope is the pending handshake in the standalone adapter."
       }
+    },
+    {
+      "id": "WTLS-CL-CLEAR-ALERT-LIFECYCLE",
+      "workItem": "WTLS-219",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a §§10.2–10.2.2 and Appendix B.4, with WAP-199_103 rows S-020–022/C-020–022",
+      "statement": "An eligible clear alert is correlated by its complete sent-record checksum. A matching fatal or critical error can end a pending clear receive negotiation while preserving verified cached sessions. Clear alerts have no closure or invalidation effect on an authenticated connection."
     }
   ]
 }

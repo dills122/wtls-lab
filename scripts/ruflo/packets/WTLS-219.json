@@ -1,0 +1,40 @@
+{
+  "workItem": "WTLS-219",
+  "clauses": [
+    "WTLS-CL-CLEAR-ALERT-LIFECYCLE"
+  ],
+  "objective": "Implement G3 receive-side policy exactly as reviewed in docs/WAP_199_CLEAR_ALERT_PLAN.md, solely in standalone wtls-lab. Start with a deterministic failing test for a checksum-matched clear fatal that leaves a pending Rust peer negotiating; record red/green. Process only a well-framed standalone null-cipher alert on a pending authenticated-profile negotiation still receiving clear records. Match its checksum against the current attempt's history of complete emitted records, including a prior record in a concatenated SDU; unmatched zero has no exception. Validate before any state/sequence change. Require the ordinary expected clear sequence except for a checksum-matched fatal or critical no_connection, which accepts any record sequence during pending negotiation. Invalid inputs are rejected diagnostics and never consume sequence, change timers, revoke sessions or end the negotiation. Use PeerAlert(Clear) for accepted alerts. Matching clear fatal or critical errors end the pending wire peer, stop retries, release provisional state/ref, and free the UDP slot through existing diagnostic/Closed retirement. Keep verified cache entries and original expiry. No synthetic response, automatic fallback, new public API, or connection/session-close acknowledgment. Matching warning, correctly leveled clear close notifications and clear duplicate-Finished warning are diagnostic-only and do not confirm or close. Reject wrong closure severity and invalid level; reject any clear alert after a committed receive epoch, including the abbreviated client AwaitingConfirmation. Keep the legacy profile's existing clear behavior and protected error/close/cache handling, and provisional protected policy. No new outbound certificate/errors or time_required timer behavior. Deterministic healthy local peer tests cover both roles and full/abbreviated pre-commit terminal paths, correct checksum for an earlier record with independent expectation, mismatched/malformed/other-attempt/zero (and ordinary sequence) rejection and normal follow-on, no_connection at max and another unexpected sequence plus wrong checksum, clear advisory and protected-only cases, UDP slot release, cache reuse with same ID and original expiry, and committed full plus resumed AwaitingConfirmation with protected traffic. Add the analogous generic protected critical server regression and retain the existing protected invalidation regressions. Use existing in-memory fixtures and ordinary valid/rejected input tests; no offensive, live simulator or external network work. Name new core tests with clear_alert. Use minimal Rust changes and existing decoder/actions. Run focused tests, full gates are supervised. Maintainer owns docs/evidence.",
+  "paths": [
+    "src/wire.rs",
+    "src/wire/codec.rs",
+    "src/wire/alert_tests.rs",
+    "tests/protected_echo.rs",
+    "tests/udp_adapter.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "clear_alert"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "protected_echo"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "udp_adapter"
+    ]
+  ],
+  "timeoutSeconds": 900
+}

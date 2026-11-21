@@ -6,8 +6,9 @@ use openssl::rsa::Rsa;
 use wtls_lab::handshake::{CloseScope, HandshakeKind, RetryPolicy, Status};
 use wtls_lab::udp::{Adapter, Diagnostic, Event};
 use wtls_lab::wire::{
-    DatagramBudget, ResumableClient, ResumableServer, ServerIdentity, TrustAnchor,
-    decode_client_hello, decode_server_hello, issue_certificate,
+    AlertFields, AlertProtection, DatagramBudget, ResumableClient, ResumableServer, ServerIdentity,
+    TrustAnchor, WireAction, WireError, decode_client_hello, decode_server_hello,
+    issue_certificate,
 };
 use wtls_lab::{CipherSpec, RecordType, decode_datagram};
 
@@ -23,6 +24,11 @@ fn contexts() -> (ResumableClient, ResumableServer) {
 }
 
 fn contexts_with_authority(require_authority: bool) -> (ResumableClient, ResumableServer) {
+    let (trust, servers) = credentials(require_authority);
+    (client_context(trust), servers)
+}
+
+fn credentials(require_authority: bool) -> (TrustAnchor, ResumableServer) {
     let ca = Rsa::generate(2048).unwrap();
     let leaf = Rsa::generate(2048).unwrap();
     let leaf_public =
@@ -39,18 +45,20 @@ fn contexts_with_authority(require_authority: bool) -> (ResumableClient, Resumab
         ServerIdentity::new(certificate, leaf).unwrap()
     };
     let trust = TrustAnchor::new(ISSUER, SUBJECT, ca_public).unwrap();
-    let lifetime = NonZeroU64::new(1_000).unwrap();
     (
-        ResumableClient::new(
-            RetryPolicy {
-                timeout_ms: NonZeroU64::new(10).unwrap(),
-                max_retries: 2,
-            },
-            trust,
-            lifetime,
-        ),
-        ResumableServer::new(identity, NonZeroUsize::new(8).unwrap(), lifetime),
+        trust,
+        ResumableServer::new(identity, NonZeroUsize::new(8).unwrap(), CACHE_LIFETIME),
     )
+}
+
+const RETRY: RetryPolicy = RetryPolicy {
+    timeout_ms: NonZeroU64::new(10).unwrap(),
+    max_retries: 2,
+};
+const CACHE_LIFETIME: NonZeroU64 = NonZeroU64::new(1_000).unwrap();
+
+fn client_context(trust: TrustAnchor) -> ResumableClient {
+    ResumableClient::new(RETRY, trust, CACHE_LIFETIME)
 }
 
 fn adapter(server: Option<ResumableServer>, capacity: usize) -> Adapter {
@@ -581,8 +589,12 @@ fn pending_client_hello_replaces_full_handshake_at_capacity() {
         SERVER_ADDR,
         HandshakeKind::Full
     ));
+    let mut resume = adapter(None, 1);
+    link.send(resume.connect(SERVER_ADDR, &clients, WALL, 114));
+    let nonempty_offer = link.take(SERVER_ADDR);
+    assert!(!session_id(&nonempty_offer).is_empty());
     assert!(matches!(
-        server.receive(CLIENT_ADDR, &hello_c, WALL, 114).as_slice(),
+        server.receive(CLIENT_ADDR, &nonempty_offer, WALL, 114).as_slice(),
         [Event::Diagnostic { remote, reason: Diagnostic::Protocol(_) }] if *remote == CLIENT_ADDR
     ));
     assert_eq!(server.status(CLIENT_ADDR), Some(Status::Open));
@@ -1083,8 +1095,12 @@ fn admission_routing_and_close_scope_control_reconnects() {
         server_addr,
         HandshakeKind::Full
     ));
+    let mut resume = adapter(None, 1);
+    link.send(resume.connect(server_addr, &clients, WALL, 16));
+    let nonempty_offer = link.take(server_addr);
+    assert_eq!(session_id(&nonempty_offer), initial_id);
     assert!(matches!(
-        server.receive(client_addr, &other_hello, WALL, 16).as_slice(),
+        server.receive(client_addr, &nonempty_offer, WALL, 16).as_slice(),
         [Event::Diagnostic { remote, reason: Diagnostic::Protocol(_) }] if *remote == client_addr
     ));
 
@@ -1405,4 +1421,533 @@ fn captured_blackberry_hello_fits_the_udp_lab_budget() {
     assert_eq!(*destination, remote);
     assert_eq!(gateway.status(remote), Some(Status::Negotiating));
     assert_eq!(wtls_lab::decode_datagram(bytes).unwrap().len(), 3);
+}
+
+fn only_send(events: Vec<Event>, destination: SocketAddr) -> Vec<u8> {
+    let Ok([Event::Send { remote, bytes }]) = <[Event; 1]>::try_from(events) else {
+        panic!("expected one Send event");
+    };
+    assert_eq!(remote, destination);
+    bytes
+}
+
+fn recovery_hello(client: &mut Adapter, context: &ResumableClient, at: u64) -> Vec<u8> {
+    only_send(
+        client.connect(SERVER_ADDR, context, WALL + 1, at),
+        SERVER_ADDR,
+    )
+}
+
+fn recovery_flight(server: &mut Adapter, hello: &[u8], at: u64) -> Vec<u8> {
+    only_send(server.receive(CLIENT_ADDR, hello, WALL, at), CLIENT_ADDR)
+}
+
+fn recovery_commit(client: &mut Adapter, flight: &[u8], at: u64) -> Vec<u8> {
+    only_send(client.receive(SERVER_ADDR, flight, WALL, at), SERVER_ADDR)
+}
+
+fn assert_retired_hello(server: &mut Adapter, hello: &[u8], at: u64) {
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, hello, WALL, at).as_slice(),
+        [Event::Diagnostic { remote, reason: Diagnostic::PreviousClientHello }]
+            if *remote == CLIENT_ADDR
+    ));
+}
+
+#[test]
+fn established_recovery_stages_at_capacity_and_keeps_incumbent_traffic() {
+    let (trust, servers) = credentials(false);
+    let clients_a = client_context(trust.clone());
+    let clients_b = client_context(trust);
+    let mut server =
+        adapter(Some(servers), 1).with_pending_handshake_timeout_ms(NonZeroU64::new(20).unwrap());
+    let mut a = adapter(None, 1);
+    let mut b = adapter(None, 1);
+    let mut link = Link::default();
+
+    let hello_a = only_send(a.connect(SERVER_ADDR, &clients_a, WALL - 1, 0), SERVER_ADDR);
+    let flight_a = recovery_flight(&mut server, &hello_a, 1);
+    let commit_a = recovery_commit(&mut a, &flight_a, 2);
+    link.send(server.receive(CLIENT_ADDR, &commit_a, WALL, 3));
+    let final_a = link.take(CLIENT_ADDR);
+    assert!(established(
+        &a.receive(SERVER_ADDR, &final_a, WALL, 4),
+        SERVER_ADDR,
+        HandshakeKind::Full
+    ));
+
+    let hello_b = recovery_hello(&mut b, &clients_b, 10);
+    assert!(assert_client_hello_time(&hello_b, WALL + 1).is_empty());
+    let events = server.receive(CLIENT_ADDR, &hello_b, WALL, 11);
+    assert!(
+        matches!(events.as_slice(), [Event::Send { remote, .. }] if *remote == CLIENT_ADDR),
+        "fresh full ClientHello on the established tuple must start a server flight"
+    );
+    let flight_b = only_send(events, CLIENT_ADDR);
+    assert_eq!(server.status(CLIENT_ADDR), Some(Status::Open));
+    assert_eq!(server.deadline(), Some(31));
+    assert_protected_echo(&mut link, &mut a, &mut server, 12);
+
+    assert_eq!(recovery_flight(&mut server, &hello_a, 14), flight_a);
+    assert_eq!(recovery_flight(&mut server, &commit_a, 15), final_a);
+    assert_eq!(recovery_flight(&mut server, &hello_b, 16), flight_b);
+    for hello in [&hello_a, &hello_b] {
+        let mut conflict = hello.clone();
+        *conflict.last_mut().unwrap() ^= 1;
+        assert!(matches!(
+            server.receive(CLIENT_ADDR, &conflict, WALL, 17).as_slice(),
+            [Event::Diagnostic {
+                reason: Diagnostic::Protocol(WireError::InvalidRecord),
+                ..
+            }]
+        ));
+    }
+
+    let mut c = adapter(None, 1);
+    let hello_c = only_send(c.connect(SERVER_ADDR, &clients_b, WALL, 18), SERVER_ADDR);
+    let other = SocketAddr::new(CLIENT_ADDR.ip(), CLIENT_ADDR.port() + 1);
+    assert!(matches!(
+        server.receive(other, &hello_c, WALL, 18).as_slice(),
+        [Event::Diagnostic { remote, reason: Diagnostic::AtCapacity }] if *remote == other
+    ));
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, &hello_c, WALL, 19).as_slice(),
+        [Event::Diagnostic { remote, reason: Diagnostic::AddressInUse }] if *remote == CLIENT_ADDR
+    ));
+    assert_eq!(recovery_flight(&mut server, &hello_b, 20), flight_b);
+    assert_eq!(server.deadline(), Some(31));
+    assert_eq!(server.status(CLIENT_ADDR), Some(Status::Open));
+}
+
+#[test]
+fn established_recovery_keeps_both_peers_on_incomplete_commit_input() {
+    let (trust, servers) = credentials(false);
+    let clients_a = client_context(trust.clone());
+    let clients_b = client_context(trust);
+    let mut server =
+        adapter(Some(servers), 1).with_pending_handshake_timeout_ms(NonZeroU64::new(20).unwrap());
+    let mut a = adapter(None, 1);
+    let mut b = adapter(None, 1);
+    let mut link = Link::default();
+    full_handshake_with_hello_times(&mut link, &mut a, &mut server, &clients_a);
+
+    let hello_b = recovery_hello(&mut b, &clients_b, 105);
+    let flight_b = recovery_flight(&mut server, &hello_b, 106);
+    let commit_b = recovery_commit(&mut b, &flight_b, 107);
+    let records = decode_datagram(&commit_b).unwrap();
+    let [key_exchange, ccs, _] = records.as_slice() else {
+        panic!("expected a three-record full client commit");
+    };
+    let key_exchange_end = key_exchange.wire_len();
+    let ccs_end = key_exchange_end + ccs.wire_len();
+
+    for (at, end) in [(108, 0), (110, key_exchange_end), (112, ccs_end)] {
+        assert!(matches!(
+            server.receive(CLIENT_ADDR, &commit_b[..end], WALL, at).as_slice(),
+            [Event::Diagnostic { remote, reason: Diagnostic::Protocol(_) }]
+                if *remote == CLIENT_ADDR
+        ));
+        assert_eq!(server.status(CLIENT_ADDR), Some(Status::Open));
+        assert_eq!(server.deadline(), Some(126));
+        assert_protected_echo(&mut link, &mut a, &mut server, at + 1);
+    }
+    assert_eq!(recovery_flight(&mut server, &hello_b, 114), flight_b);
+    assert_eq!(server.deadline(), Some(126));
+}
+
+#[test]
+fn established_recovery_promotes_and_replays_lost_final_before_delayed_incumbent_close() {
+    let (trust, servers) = credentials(false);
+    let clients_a = client_context(trust.clone());
+    let clients_b = client_context(trust);
+    let mut a = adapter(None, 1);
+    let mut b = adapter(None, 1);
+    let mut server = adapter(Some(servers), 1);
+    let mut link = Link::default();
+    let id_a = full_handshake_with_hello_times(&mut link, &mut a, &mut server, &clients_a);
+
+    let hello_b = recovery_hello(&mut b, &clients_b, 105);
+    let flight_b = recovery_flight(&mut server, &hello_b, 106);
+    let commit_b = recovery_commit(&mut b, &flight_b, 107);
+    let delayed_a = only_send(
+        a.send_application(SERVER_ADDR, PAYLOAD.to_vec()),
+        SERVER_ADDR,
+    );
+    let mut reconnect_a = adapter(None, 1);
+    let resume_a = recovery_hello(&mut reconnect_a, &clients_a, 108);
+    assert_eq!(session_id(&resume_a), id_a);
+    link.send(a.close(SERVER_ADDR, CloseScope::Session));
+    let delayed_close = link.take(SERVER_ADDR);
+
+    let events = server.receive(CLIENT_ADDR, &commit_b, WALL, 109);
+    assert!(matches!(
+        events.as_slice(),
+        [Event::Send { remote, .. }, Event::Established { remote: established, kind: HandshakeKind::Full }]
+            if *remote == CLIENT_ADDR && *established == CLIENT_ADDR
+    ));
+    link.send(events);
+    let lost_final = link.take(CLIENT_ADDR);
+    assert_eq!(server.deadline(), None);
+    for delayed in [&delayed_a, &delayed_close] {
+        assert!(matches!(
+            server.receive(CLIENT_ADDR, delayed, WALL, 110).as_slice(),
+            [Event::Diagnostic {
+                reason: Diagnostic::Protocol(_),
+                ..
+            }]
+        ));
+    }
+    assert_eq!(server.status(CLIENT_ADDR), Some(Status::Open));
+
+    let retry = only_send(b.tick(117), SERVER_ADDR);
+    assert_eq!(retry, commit_b);
+    assert_eq!(recovery_flight(&mut server, &retry, 118), lost_final);
+    assert!(established(
+        &b.receive(SERVER_ADDR, &lost_final, WALL, 119),
+        SERVER_ADDR,
+        HandshakeKind::Full
+    ));
+    assert_protected_echo(&mut link, &mut b, &mut server, 120);
+
+    server.close(CLIENT_ADDR, CloseScope::Connection);
+    let resumed = recovery_flight(&mut server, &resume_a, 122);
+    assert_eq!(session_id(&resumed), id_a);
+}
+
+#[test]
+fn established_recovery_expires_at_the_deadline_in_tick_and_receive() {
+    for expire_by_tick in [true, false] {
+        let (trust, servers) = credentials(false);
+        let clients_a = client_context(trust.clone());
+        let clients_b = client_context(trust);
+        let mut server = adapter(Some(servers), 1)
+            .with_pending_handshake_timeout_ms(NonZeroU64::new(10).unwrap());
+        let mut a = adapter(None, 1);
+        let mut b = adapter(None, 1);
+        let mut link = Link::default();
+        full_handshake_with_hello_times(&mut link, &mut a, &mut server, &clients_a);
+        let hello_b = recovery_hello(&mut b, &clients_b, 105);
+        let flight_b = recovery_flight(&mut server, &hello_b, 106);
+        let commit_b = recovery_commit(&mut b, &flight_b, 107);
+        assert_eq!(recovery_flight(&mut server, &hello_b, 115), flight_b);
+        assert_eq!(server.deadline(), Some(116));
+        if expire_by_tick {
+            assert!(server.tick(116).is_empty());
+            assert_eq!(server.deadline(), None);
+        }
+        assert!(matches!(
+            server.receive(CLIENT_ADDR, &commit_b, WALL, 116).as_slice(),
+            [Event::Diagnostic {
+                reason: Diagnostic::Protocol(_),
+                ..
+            }]
+        ));
+        assert_eq!(server.deadline(), None);
+        assert_retired_hello(&mut server, &hello_b, 117);
+        assert_protected_echo(&mut link, &mut a, &mut server, 118);
+        let hello_c = only_send(
+            adapter(None, 1).connect(SERVER_ADDR, &clients_b, WALL - 1, 120),
+            SERVER_ADDR,
+        );
+        recovery_flight(&mut server, &hello_c, 120);
+    }
+}
+
+#[test]
+fn established_recovery_retires_failed_finished_and_preserves_incumbent() {
+    let (trust, servers) = credentials(false);
+    let clients_a = client_context(trust.clone());
+    let clients_b = client_context(trust);
+    let mut a = adapter(None, 1);
+    let mut b = adapter(None, 1);
+    let mut c = adapter(None, 1);
+    let mut server = adapter(Some(servers), 1);
+    let mut link = Link::default();
+    full_handshake_with_hello_times(&mut link, &mut a, &mut server, &clients_a);
+    let mut hello_b = recovery_hello(&mut b, &clients_b, 105);
+    // The gateway still selects refresh 3, but the peer's Finished covers
+    // its original offer. The client generates the entire protected commit.
+    assert_eq!(*hello_b.last().unwrap(), 3);
+    *hello_b.last_mut().unwrap() = 4;
+    let flight_b = recovery_flight(&mut server, &hello_b, 106);
+    let commit_b = recovery_commit(&mut b, &flight_b, 107);
+    let events = server.receive(CLIENT_ADDR, &commit_b, WALL, 108);
+    let [Event::Diagnostic { reason, .. }] = events.as_slice() else {
+        panic!("expected a Finished verification diagnostic");
+    };
+    assert_eq!(
+        *reason,
+        Diagnostic::Protocol(WireError::AuthenticationFailed)
+    );
+    assert_eq!(server.deadline(), None);
+    assert_retired_hello(&mut server, &hello_b, 109);
+    assert_protected_echo(&mut link, &mut a, &mut server, 110);
+
+    let hello_c = only_send(
+        c.connect(SERVER_ADDR, &clients_b, WALL - 1, 112),
+        SERVER_ADDR,
+    );
+    let flight_c = recovery_flight(&mut server, &hello_c, 113);
+    let deadline = server.deadline();
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, &commit_b, WALL, 114).as_slice(),
+        [Event::Diagnostic {
+            reason: Diagnostic::Protocol(_),
+            ..
+        }]
+    ));
+    assert_eq!(server.deadline(), deadline);
+    assert_protected_echo(&mut link, &mut a, &mut server, 115);
+    let commit_c = recovery_commit(&mut c, &flight_c, 117);
+    assert!(established(
+        &server.receive(CLIENT_ADDR, &commit_c, WALL, 118),
+        CLIENT_ADDR,
+        HandshakeKind::Full
+    ));
+}
+
+#[test]
+fn established_recovery_initial_alert_and_clear_certificate_rejection_preserve_incumbent() {
+    let (trust, servers) = credentials(false);
+    let clients_a = client_context(trust.clone());
+    let clients_b = ResumableClient::provisioned(RETRY, trust, CACHE_LIFETIME);
+    let mut a = adapter(None, 1);
+    let mut b = adapter(None, 1);
+    let mut server = adapter(Some(servers), 1);
+    let mut link = Link::default();
+    let id_a = full_handshake_with_hello_times(&mut link, &mut a, &mut server, &clients_a);
+
+    let hello_b = only_send(
+        b.connect(SERVER_ADDR, &clients_b, WALL + 2, 105),
+        SERVER_ADDR,
+    );
+    let mut incompatible = hello_b.clone();
+    let suite = incompatible.len() - 6;
+    assert_eq!(incompatible[suite..suite + 2], [6, 3]);
+    incompatible[suite..suite + 2].copy_from_slice(&[5, 2]);
+    let alert = recovery_flight(&mut server, &incompatible, 106);
+    let records = decode_datagram(&alert).unwrap();
+    assert!(matches!(records.as_slice(), [record]
+        if record.content_type == RecordType::Alert
+            && record.cipher_spec == CipherSpec::Null
+            && record.fragment[..2] == [3, 40]));
+    assert_eq!(server.deadline(), None);
+    assert_protected_echo(&mut link, &mut a, &mut server, 107);
+
+    let flight_b = recovery_flight(&mut server, &hello_b, 109);
+    assert!(server.deadline().is_some());
+    let events = b.receive(SERVER_ADDR, &flight_b, WALL + 2, 110);
+    assert!(matches!(
+        events.as_slice(),
+        [
+            Event::Diagnostic { reason: Diagnostic::Protocol(WireError::CertificateRejected), .. },
+            Event::Send { remote, .. },
+        ] if *remote == SERVER_ADDR
+    ));
+    link.send(events);
+    let cert_alert = link.take(SERVER_ADDR);
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, &cert_alert, WALL, 111).as_slice(),
+        [Event::Diagnostic {
+            remote,
+            reason: Diagnostic::Protocol(WireError::PeerAlert {
+                fields: AlertFields { level: 3, description: 45, .. },
+                protection: AlertProtection::Clear,
+            }),
+        }] if *remote == CLIENT_ADDR
+    ));
+    assert_eq!(server.deadline(), None);
+    assert_retired_hello(&mut server, &hello_b, 112);
+    assert_protected_echo(&mut link, &mut a, &mut server, 113);
+    server.close(CLIENT_ADDR, CloseScope::Connection);
+    let resume_a = recovery_hello(&mut adapter(None, 1), &clients_a, 115);
+    assert_eq!(
+        session_id(&recovery_flight(&mut server, &resume_a, 116)),
+        id_a
+    );
+}
+
+#[test]
+fn established_recovery_incumbent_close_cancels_staged_commit_and_honors_scope() {
+    for (scope, close_from_client) in [
+        (CloseScope::Connection, true),
+        (CloseScope::Session, true),
+        (CloseScope::Connection, false),
+    ] {
+        let (trust, servers) = credentials(false);
+        let clients_a = client_context(trust.clone());
+        let clients_b = client_context(trust);
+        let mut a = adapter(None, 1);
+        let mut b = adapter(None, 1);
+        let mut server = adapter(Some(servers), 1);
+        let mut link = Link::default();
+        let id_a = full_handshake_with_hello_times(&mut link, &mut a, &mut server, &clients_a);
+        let hello_b = recovery_hello(&mut b, &clients_b, 105);
+        let flight_b = recovery_flight(&mut server, &hello_b, 106);
+        let commit_b = recovery_commit(&mut b, &flight_b, 107);
+        let resume_a = recovery_hello(&mut adapter(None, 1), &clients_a, 108);
+        assert_eq!(session_id(&resume_a), id_a);
+        let events = if close_from_client {
+            link.send(a.close(SERVER_ADDR, scope));
+            let close_a = link.take(SERVER_ADDR);
+            server.receive(CLIENT_ADDR, &close_a, WALL, 109)
+        } else {
+            server.close(CLIENT_ADDR, scope)
+        };
+        assert!(matches!(
+            events.as_slice(),
+            [Event::Send { .. }, Event::Closed { remote, scope: actual }]
+                if *remote == CLIENT_ADDR && *actual == scope
+        ));
+        if !close_from_client {
+            link.send(events);
+            let close_a = link.take(CLIENT_ADDR);
+            assert!(
+                a.receive(SERVER_ADDR, &close_a, WALL, 109)
+                    .iter()
+                    .any(|event| {
+                        matches!(event, Event::Closed { remote, scope: actual }
+                    if *remote == SERVER_ADDR && *actual == scope)
+                    })
+            );
+        }
+        assert_eq!(server.status(CLIENT_ADDR), None);
+        assert_eq!(server.deadline(), None);
+        assert!(matches!(
+            server.receive(CLIENT_ADDR, &commit_b, WALL, 110).as_slice(),
+            [Event::Diagnostic {
+                reason: Diagnostic::Protocol(_),
+                ..
+            }]
+        ));
+        assert_retired_hello(&mut server, &hello_b, 111);
+        let new_flight = recovery_flight(&mut server, &resume_a, 112);
+        assert_eq!(
+            session_id(&new_flight) == id_a,
+            scope == CloseScope::Connection
+        );
+    }
+}
+
+fn seed_recovery_cache(clients: &ResumableClient, servers: &ResumableServer) -> Vec<u8> {
+    fn sent(actions: Vec<WireAction>) -> Vec<u8> {
+        actions
+            .into_iter()
+            .find_map(|action| match action {
+                WireAction::Send(bytes) => Some(bytes),
+                _ => None,
+            })
+            .expect("one wire flight")
+    }
+
+    let mut client = clients.peer(WALL).unwrap();
+    let mut server = servers.peer(WALL).unwrap();
+    let opening = sent(client.start(0).unwrap());
+    let flight = sent(server.receive(&opening, 1).unwrap());
+    let commit = sent(client.receive(&flight, 2).unwrap());
+    let finished = sent(server.receive(&commit, 3).unwrap());
+    assert_eq!(
+        client.receive(&finished, 4).unwrap(),
+        [WireAction::Established(HandshakeKind::Full)]
+    );
+    session_id(&flight)
+}
+
+#[test]
+fn established_recovery_keeps_verified_abbreviated_prefix_with_incumbent() {
+    let (trust, servers) = credentials(false);
+    let clients_a = client_context(trust.clone());
+    let clients_b = client_context(trust);
+    let id = seed_recovery_cache(&clients_a, &servers);
+    let mut server = adapter(Some(servers), 1);
+    let mut a = adapter(None, 1);
+    let mut b = adapter(None, 1);
+    let mut link = Link::default();
+
+    let hello_a = recovery_hello(&mut a, &clients_a, 10);
+    let flight_a = recovery_flight(&mut server, &hello_a, 11);
+    assert_eq!(session_id(&flight_a), id);
+    link.send(a.receive(SERVER_ADDR, &flight_a, WALL, 12));
+    let commit_a = link.take(SERVER_ADDR);
+    assert!(established(
+        &server.receive(CLIENT_ADDR, &commit_a, WALL, 13),
+        CLIENT_ADDR,
+        HandshakeKind::Resumed
+    ));
+    assert_eq!(a.status(SERVER_ADDR), Some(Status::AwaitingConfirmation));
+
+    let hello_b = only_send(
+        b.connect(SERVER_ADDR, &clients_b, WALL - 1, 14),
+        SERVER_ADDR,
+    );
+    let flight_b = recovery_flight(&mut server, &hello_b, 15);
+    let deadline = server.deadline();
+    assert_eq!(recovery_flight(&mut server, &hello_a, 16), flight_a);
+    let confirmation = recovery_flight(&mut server, &commit_a, 17);
+    assert_eq!(
+        decode_datagram(&confirmation).unwrap()[0].cipher_spec,
+        CipherSpec::Current
+    );
+
+    let prefixed = only_send(
+        a.send_application(SERVER_ADDR, PAYLOAD.to_vec()),
+        SERVER_ADDR,
+    );
+    assert!(prefixed.starts_with(&commit_a));
+    let events = server.receive(CLIENT_ADDR, &prefixed, WALL, 18);
+    assert!(events.iter().any(|event| matches!(
+        event, Event::Deliver { remote, payload } if *remote == CLIENT_ADDR && payload == PAYLOAD
+    )));
+    assert_eq!(recovery_flight(&mut server, &hello_b, 19), flight_b);
+    assert_eq!(server.deadline(), deadline);
+    let response = only_send(
+        server.send_application(CLIENT_ADDR, PAYLOAD.to_vec()),
+        CLIENT_ADDR,
+    );
+    assert!(matches!(
+        a.receive(SERVER_ADDR, &response, WALL, 20).as_slice(),
+        [Event::Deliver { remote, payload }] if *remote == SERVER_ADDR && payload == PAYLOAD
+    ));
+}
+
+#[test]
+fn established_recovery_first_flight_budget_refusal_leaves_no_candidate() {
+    let (trust, servers) = credentials(false);
+    let clients_a = client_context(trust.clone());
+    let clients_b = client_context(trust);
+    let id = seed_recovery_cache(&clients_a, &servers);
+    let mut server = Adapter::new(Some(servers), DatagramBudget::new(160), NonZeroUsize::MIN);
+    let mut a = adapter(None, 1);
+    let mut b = adapter(None, 1);
+    let mut link = Link::default();
+
+    let hello_a = recovery_hello(&mut a, &clients_a, 10);
+    let flight_a = recovery_flight(&mut server, &hello_a, 11);
+    assert_eq!(session_id(&flight_a), id);
+    link.send(a.receive(SERVER_ADDR, &flight_a, WALL, 12));
+    let commit_a = link.take(SERVER_ADDR);
+    assert!(established(
+        &server.receive(CLIENT_ADDR, &commit_a, WALL, 13),
+        CLIENT_ADDR,
+        HandshakeKind::Resumed
+    ));
+    let confirmation = recovery_flight(&mut server, &commit_a, 14);
+    assert!(a.receive(SERVER_ADDR, &confirmation, WALL, 15).is_empty());
+
+    let hello_b = only_send(
+        b.connect(SERVER_ADDR, &clients_b, WALL - 1, 16),
+        SERVER_ADDR,
+    );
+    for at in [17, 18] {
+        assert!(matches!(
+            server.receive(CLIENT_ADDR, &hello_b, WALL, at).as_slice(),
+            [Event::Diagnostic { remote, reason: Diagnostic::OutboundTooLarge(_) }]
+                if *remote == CLIENT_ADDR
+        ));
+        assert_eq!(server.deadline(), None);
+    }
+    assert_protected_echo(&mut link, &mut a, &mut server, 19);
+    server.close(CLIENT_ADDR, CloseScope::Connection);
+    let resume_a = recovery_hello(&mut adapter(None, 1), &clients_a, 21);
+    assert_eq!(session_id(&recovery_flight(&mut server, &resume_a, 22)), id);
 }

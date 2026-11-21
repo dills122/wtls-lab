@@ -18,8 +18,8 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 use crate::handshake::{CloseScope, HandshakeKind, Status};
 use crate::wire::{
-    DatagramBudget, DatagramTooLarge, ReceiveError, ResumableClient, ResumableServer, WireAction,
-    WireError, WirePeer, decode_client_hello,
+    ClientHello, DatagramBudget, DatagramTooLarge, ReceiveError, ResumableClient, ResumableServer,
+    WireAction, WireError, WirePeer, decode_client_hello,
 };
 use crate::{CipherSpec, RecordType, decode_record_envelope};
 
@@ -84,6 +84,13 @@ struct Association {
     peer: WirePeer,
     client_random: Option<[u8; 16]>,
     pending_until_ms: Option<u64>,
+    candidate: Option<RecoveryCandidate>,
+}
+
+struct RecoveryCandidate {
+    peer: WirePeer,
+    client_random: [u8; 16],
+    deadline: u64,
 }
 
 /// A table of peers keyed by the full remote address (IP and port).
@@ -91,6 +98,8 @@ struct Association {
 /// One capacity covers all live associations, including negotiations. A full
 /// table refuses new associations. An inbound handshake gets a fixed deadline
 /// from the slot's first accepted ClientHello, across retries and replacements.
+/// An established inbound peer can stage one full handshake with its own fixed
+/// deadline. The incumbent serves the tuple until the staged handshake commits.
 /// Established and outbound peers follow WirePeer's lifecycle. The most recent
 /// `capacity` server-side (address, ClientHello random) pairs from closed, expired,
 /// or displaced handshakes are kept in FIFO order to reject stale hellos. The shared
@@ -144,7 +153,13 @@ impl Adapter {
     pub fn deadline(&self) -> Option<u64> {
         self.associations
             .values()
-            .flat_map(|entry| [entry.peer.deadline(), entry.pending_until_ms])
+            .flat_map(|entry| {
+                [
+                    entry.peer.deadline(),
+                    entry.pending_until_ms,
+                    entry.candidate.as_ref().map(|candidate| candidate.deadline),
+                ]
+            })
             .flatten()
             .min()
     }
@@ -195,6 +210,7 @@ impl Adapter {
                     peer,
                     client_random: None,
                     pending_until_ms: None,
+                    candidate: None,
                 },
             );
         }
@@ -226,14 +242,17 @@ impl Adapter {
             return diagnostic(remote, Diagnostic::InboundTooLarge(error));
         }
         let (client_random, replacement_deadline) = match self.associations.get(&remote) {
+            Some(entry) if entry.client_random.is_some() && entry.peer.status() == Status::Open => {
+                return self.receive_established(remote, bytes, unix_seconds, monotonic_ms);
+            }
             Some(entry) => {
                 if let (Some(current_random), Some(deadline)) =
                     (entry.client_random, entry.pending_until_ms)
                     && entry.peer.status() == Status::Negotiating
-                    && let Ok(random) = opening_random(bytes)
-                    && random != current_random
+                    && let Ok(hello) = opening_hello(bytes)
+                    && hello.random != current_random
                 {
-                    (random, Some(deadline))
+                    (hello.random, Some(deadline))
                 } else {
                     // WirePeer distinguishes an exact replay from a conflicting
                     // same-random hello and handles ordinary negotiation traffic.
@@ -244,8 +263,8 @@ impl Adapter {
                 if self.server.is_none() {
                     return diagnostic(remote, Diagnostic::NoAssociation);
                 }
-                match opening_random(bytes) {
-                    Ok(random) => (random, None),
+                match opening_hello(bytes) {
+                    Ok(hello) => (hello.random, None),
                     Err(error) => return diagnostic(remote, Diagnostic::Protocol(error)),
                 }
             }
@@ -257,25 +276,17 @@ impl Adapter {
             return diagnostic(remote, Diagnostic::AtCapacity);
         }
 
-        let Some(server) = &self.server else {
-            return diagnostic(remote, Diagnostic::NoAssociation);
-        };
-        let mut peer = match server.peer(unix_seconds) {
-            Ok(peer) => peer,
-            Err(error) => return diagnostic(remote, Diagnostic::Protocol(error)),
-        };
-        let events = self.events(remote, peer.receive_with_reply(bytes, monotonic_ms));
-        // An initial alert leaves the candidate idle. Admission requires a
-        // negotiating peer whose first flight passed the datagram budget.
-        if has_send(&events) && peer.status() == Status::Negotiating {
+        let (events, peer) = self.begin_inbound(remote, bytes, unix_seconds, monotonic_ms);
+        if let Some(peer) = peer {
             let displaced = self.associations.insert(
                 remote,
                 Association {
                     peer,
                     client_random: Some(client_random),
-                    pending_until_ms: Some(replacement_deadline.unwrap_or_else(|| {
-                        monotonic_ms.saturating_add(self.pending_handshake_timeout_ms.get())
-                    })),
+                    pending_until_ms: Some(
+                        replacement_deadline.unwrap_or_else(|| self.pending_deadline(monotonic_ms)),
+                    ),
+                    candidate: None,
                 },
             );
             if let Some(random) = displaced.and_then(|entry| entry.client_random) {
@@ -285,17 +296,152 @@ impl Adapter {
         events
     }
 
+    fn receive_established(
+        &mut self,
+        remote: SocketAddr,
+        bytes: &[u8],
+        unix_seconds: u32,
+        monotonic_ms: u64,
+    ) -> Vec<Event> {
+        let entry = &self.associations[&remote];
+        let receive = |peer: &mut WirePeer| peer.receive_with_reply(bytes, monotonic_ms);
+        if entry.peer.recognizes_handshake_retry(bytes) {
+            return self.drive(remote, receive);
+        }
+        let candidate = entry.candidate.as_ref();
+        if candidate.is_some_and(|staged| staged.peer.recognizes_handshake_retry(bytes)) {
+            return self.receive_candidate(remote, bytes, monotonic_ms);
+        }
+
+        if let Ok(hello) = opening_hello(bytes) {
+            let random = hello.random;
+            if entry.client_random == Some(random)
+                || candidate.is_some_and(|staged| staged.client_random == random)
+            {
+                return diagnostic(remote, Diagnostic::Protocol(WireError::InvalidRecord));
+            }
+            if self.retired_hellos.contains(&(remote, random)) {
+                return diagnostic(remote, Diagnostic::PreviousClientHello);
+            }
+            if !hello.session_id.is_empty() {
+                return self.drive(remote, receive);
+            }
+            if candidate.is_some() {
+                return diagnostic(remote, Diagnostic::AddressInUse);
+            }
+            let (events, peer) = self.begin_inbound(remote, bytes, unix_seconds, monotonic_ms);
+            if let Some(peer) = peer {
+                let deadline = self.pending_deadline(monotonic_ms);
+                self.associations.get_mut(&remote).unwrap().candidate = Some(RecoveryCandidate {
+                    peer,
+                    client_random: random,
+                    deadline,
+                });
+            }
+            return events;
+        }
+
+        if candidate.is_some() && WirePeer::is_full_commit_or_clear_alert(bytes) {
+            return self.receive_candidate(remote, bytes, monotonic_ms);
+        }
+        self.drive(remote, receive)
+    }
+
+    fn receive_candidate(
+        &mut self,
+        remote: SocketAddr,
+        bytes: &[u8],
+        monotonic_ms: u64,
+    ) -> Vec<Event> {
+        let entry = self.associations.get_mut(&remote).unwrap();
+        let candidate = entry.candidate.as_mut().unwrap();
+        let actions = candidate
+            .peer
+            .receive_recovery(bytes, monotonic_ms, self.budget);
+        let status = candidate.peer.status();
+        let events = self.events(remote, actions);
+        if status == Status::Negotiating {
+            return events;
+        }
+        let entry = self.associations.get_mut(&remote).unwrap();
+        let candidate = entry.candidate.take().unwrap();
+        match status {
+            Status::Open
+                if has_send(&events)
+                    && events.iter().any(|event| {
+                        matches!(
+                            event,
+                            Event::Established {
+                                kind: HandshakeKind::Full,
+                                ..
+                            }
+                        )
+                    }) =>
+            {
+                entry.peer = candidate.peer;
+                if let Some(random) = entry.client_random.replace(candidate.client_random) {
+                    self.remember_retired_hello(remote, random);
+                }
+                events
+            }
+            _ => {
+                self.remember_retired_hello(remote, candidate.client_random);
+                events
+                    .into_iter()
+                    .filter(|event| matches!(event, Event::Send { .. } | Event::Diagnostic { .. }))
+                    .collect()
+            }
+        }
+    }
+
+    fn begin_inbound(
+        &self,
+        remote: SocketAddr,
+        bytes: &[u8],
+        unix_seconds: u32,
+        monotonic_ms: u64,
+    ) -> (Vec<Event>, Option<WirePeer>) {
+        let Some(server) = &self.server else {
+            return (diagnostic(remote, Diagnostic::NoAssociation), None);
+        };
+        let mut peer = match server.peer(unix_seconds) {
+            Ok(peer) => peer,
+            Err(error) => return (diagnostic(remote, Diagnostic::Protocol(error)), None),
+        };
+        let events = self.events(remote, peer.receive_with_reply(bytes, monotonic_ms));
+        // An initial alert leaves the peer idle. Admission requires a
+        // negotiating peer whose first flight passed the datagram budget.
+        let admitted = has_send(&events) && peer.status() == Status::Negotiating;
+        (events, admitted.then_some(peer))
+    }
+
+    fn pending_deadline(&self, monotonic_ms: u64) -> u64 {
+        monotonic_ms.saturating_add(self.pending_handshake_timeout_ms.get())
+    }
+
     fn expire_inbound(&mut self, monotonic_ms: u64) -> Vec<Event> {
+        let mut retired_candidates = Vec::new();
         let expired: Vec<_> = self
             .associations
-            .iter()
+            .iter_mut()
             .filter_map(|(&remote, entry)| {
+                if entry
+                    .candidate
+                    .as_ref()
+                    .is_some_and(|candidate| candidate.deadline <= monotonic_ms)
+                {
+                    let candidate = entry.candidate.take().unwrap();
+                    retired_candidates.push((remote, candidate.client_random));
+                }
                 entry
                     .pending_until_ms
                     .filter(|&deadline| deadline <= monotonic_ms)
                     .map(|_| remote)
             })
             .collect();
+        for (remote, random) in retired_candidates {
+            self.remember_retired_hello(remote, random);
+        }
         expired
             .into_iter()
             .map(|remote| {
@@ -337,12 +483,14 @@ impl Adapter {
     }
 
     fn retire(&mut self, remote: SocketAddr) {
-        if let Some(random) = self
-            .associations
-            .remove(&remote)
-            .and_then(|entry| entry.client_random)
-        {
-            self.remember_retired_hello(remote, random);
+        if let Some(entry) = self.associations.remove(&remote) {
+            for random in entry
+                .client_random
+                .into_iter()
+                .chain(entry.candidate.map(|candidate| candidate.client_random))
+            {
+                self.remember_retired_hello(remote, random);
+            }
         }
     }
 
@@ -391,7 +539,7 @@ impl Adapter {
     }
 }
 
-fn opening_random(bytes: &[u8]) -> Result<[u8; 16], WireError> {
+fn opening_hello(bytes: &[u8]) -> Result<ClientHello<'_>, WireError> {
     let record = decode_record_envelope(bytes)
         .map_err(|kind| WireError::Decode(crate::DecodeError { offset: 0, kind }))?;
     record
@@ -404,7 +552,7 @@ fn opening_random(bytes: &[u8]) -> Result<[u8; 16], WireError> {
     {
         return Err(WireError::InvalidRecord);
     }
-    Ok(decode_client_hello(record.fragment)?.random)
+    decode_client_hello(record.fragment)
 }
 
 fn diagnostic(remote: SocketAddr, reason: Diagnostic) -> Vec<Event> {

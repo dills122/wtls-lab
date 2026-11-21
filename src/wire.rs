@@ -198,10 +198,18 @@ struct Flight {
     bytes: Vec<u8>,
 }
 
+impl Flight {
+    fn exact_match<'a>(flights: &'a [Self], bytes: &[u8]) -> Option<&'a Self> {
+        flights.iter().find(|flight| flight.bytes == bytes)
+    }
+}
+
 struct VerifiedCommit {
     flight: Flight,
     finished_checksum: [u8; 4],
 }
+
+type FramedRecord<'a> = (usize, usize, Record<'a>);
 
 struct Incoming<'a> {
     messages: Datagram,
@@ -394,17 +402,124 @@ impl WirePeer {
         monotonic_ms: u64,
         verify: impl FnOnce(&TrustAnchor, &[u8], u32) -> Result<VerifiedLeaf, CertificateFailure>,
     ) -> Result<Vec<WireAction>, ReceiveError> {
+        self.receive_inner(bytes, monotonic_ms, verify, None)
+    }
+
+    pub(crate) fn receive_recovery(
+        &mut self,
+        bytes: &[u8],
+        monotonic_ms: u64,
+        budget: DatagramBudget,
+    ) -> Result<Vec<WireAction>, ReceiveError> {
+        self.receive_inner(
+            bytes,
+            monotonic_ms,
+            |trust, certificate, now| {
+                trust.verify_provisioned(certificate, now, verify_raw_signature)
+            },
+            Some(budget),
+        )
+    }
+
+    /// Non-mutating ownership check. Decode still authenticates any suffix.
+    pub(crate) fn recognizes_handshake_retry(&self, bytes: &[u8]) -> bool {
+        Flight::exact_match(&self.received_flights, bytes).is_some()
+            || self
+                .verified_prefix(bytes)
+                .is_ok_and(|prefix| prefix.is_some())
+    }
+
+    fn verified_prefix<'a>(
+        &self,
+        bytes: &'a [u8],
+    ) -> Result<Option<(&Flight, FramedRecord<'a>)>, WireError> {
+        let Some(flight) = self
+            .verified_commit
+            .as_ref()
+            .map(|commit| &commit.flight)
+            .filter(|flight| bytes.starts_with(&flight.bytes))
+        else {
+            return Ok(None);
+        };
+        let mut last = framed_record(bytes, 0)?;
+        for _ in 1..flight.messages.len() {
+            if last.1 == bytes.len() {
+                return Err(WireError::InvalidRecord);
+            }
+            last = framed_record(bytes, last.1)?;
+        }
+        // Frame against the full SDU so an omitted length cannot hide a suffix.
+        if last.1 != flight.bytes.len() {
+            return Err(WireError::InvalidRecord);
+        }
+        Ok(Some((flight, last)))
+    }
+
+    /// Identify the candidate's supported record shape without opening records.
+    pub(crate) fn is_full_commit_or_clear_alert(bytes: &[u8]) -> bool {
+        if bytes.is_empty() {
+            return false;
+        }
+        let Ok(first) = crate::decode_record(bytes) else {
+            return false;
+        };
+        if first.cipher_spec != CipherSpec::Null {
+            return false;
+        }
+        if first.content_type == RecordType::Alert {
+            return first.wire_len() == bytes.len();
+        }
+        // The staged peer has consumed only ClientHello (clear sequence 0).
+        if first.content_type != RecordType::Handshake
+            || first.sequence != 1
+            || !matches!(
+                decode_handshake(first.fragment),
+                Ok(Message::ClientKeyExchange(_))
+            )
+        {
+            return false;
+        }
+        let remaining = &bytes[first.wire_len()..];
+        if remaining.is_empty() {
+            return false;
+        }
+        let Ok(ccs) = crate::decode_record(remaining) else {
+            return false;
+        };
+        if ccs.content_type != RecordType::ChangeCipherSpec
+            || ccs.cipher_spec != CipherSpec::Null
+            || ccs.sequence != 2
+            || ccs.fragment != [1]
+        {
+            return false;
+        }
+        let remaining = &remaining[ccs.wire_len()..];
+        if remaining.is_empty() {
+            return false;
+        }
+        let Ok(finished) = crate::decode_record(remaining) else {
+            return false;
+        };
+        finished.content_type == RecordType::Handshake
+            && finished.cipher_spec == CipherSpec::Current
+            && finished.sequence == 0
+            && finished.wire_len() == remaining.len()
+    }
+
+    fn receive_inner(
+        &mut self,
+        bytes: &[u8],
+        monotonic_ms: u64,
+        verify: impl FnOnce(&TrustAnchor, &[u8], u32) -> Result<VerifiedLeaf, CertificateFailure>,
+        recovery_budget: Option<DatagramBudget>,
+    ) -> Result<Vec<WireAction>, ReceiveError> {
         if self.status() == Status::Closed {
             return Ok(Vec::new());
         }
 
         // Only previously validated handshake SDUs bypass the current epoch's
         // sequence checks. A replay cannot install keys or rerun key exchange.
-        if let Some(flight) = self
-            .received_flights
-            .iter()
-            .find(|flight| flight.bytes == bytes)
-        {
+        if let Some(flight) = Flight::exact_match(&self.received_flights, bytes) {
             let actions = self.handshake.receive_actions(
                 &flight.messages,
                 monotonic_ms,
@@ -634,13 +749,22 @@ impl WirePeer {
             });
         }
         let result = self.apply(actions)?;
-        if let Some((HandshakeKind::Full, id)) = established
-            && let Err(error) = self.cache_full_session(id, monotonic_ms)
-        {
-            self.handshake.abort();
-            self.traffic = None;
-            self.session = None;
-            return Err(error.into());
+        if let Some((HandshakeKind::Full, id)) = established {
+            // A staged peer's session can enter the shared cache only if the
+            // final flight can be sent. Return its actions for budget diagnostics.
+            if recovery_budget.is_some_and(|budget| {
+                !result.iter().any(|action| {
+                    matches!(action, WireAction::Send(bytes) if budget.check(bytes).is_ok())
+                })
+            }) {
+                self.handshake.abort();
+                self.release_session(false)?;
+            } else if let Err(error) = self.cache_full_session(id, monotonic_ms) {
+                self.handshake.abort();
+                self.traffic = None;
+                self.session = None;
+                return Err(error.into());
+            }
         }
         Ok(result)
     }
@@ -805,23 +929,21 @@ impl WirePeer {
             }));
         }
         let committed = self.has_committed_receive_epoch();
-        let mut offset = 0;
+        let prefix = self.verified_prefix(bytes)?;
+        let mut last_record = prefix.map(|(_, framed)| framed);
+        let mut offset = last_record.map_or(0, |(_, end, _)| end);
         let mut records = std::iter::from_fn(|| {
             if offset == bytes.len() {
                 return None;
             }
-            let start = offset;
-            Some(match crate::decode_record(&bytes[start..]) {
-                Ok(record) => {
-                    offset += record.wire_len();
-                    Ok((start, offset, record))
+            Some(match framed_record(bytes, offset) {
+                Ok(framed) => {
+                    offset = framed.1;
+                    Ok(framed)
                 }
-                Err(kind) => {
+                Err(error) => {
                     offset = bytes.len();
-                    Err(WireError::Decode(DecodeError {
-                        offset: start,
-                        kind,
-                    }))
+                    Err(error)
                 }
             })
         });
@@ -832,25 +954,10 @@ impl WirePeer {
         } else {
             records.by_ref().collect::<Result<Vec<_>, _>>()?
         };
-        let mut records = negotiation_records.into_iter().map(Ok).chain(records);
+        let records = negotiation_records.into_iter().map(Ok).chain(records);
         let mut read = self.read;
         let mut traffic = None;
-        let prefix = self
-            .verified_commit
-            .as_ref()
-            .map(|commit| &commit.flight)
-            .filter(|flight| bytes.starts_with(&flight.bytes));
-        let mut last_record = None;
-        if let Some(flight) = prefix {
-            for _ in &flight.messages {
-                last_record = Some(records.next().ok_or(WireError::InvalidRecord)??);
-            }
-            // Frame against the full SDU so an omitted length cannot hide a suffix.
-            if last_record.map(|(_, end, _)| end) != Some(flight.bytes.len()) {
-                return Err(WireError::InvalidRecord);
-            }
-        }
-        let mut messages = prefix.map_or_else(Vec::new, |flight| flight.messages.clone());
+        let mut messages = prefix.map_or_else(Vec::new, |(flight, _)| flight.messages.clone());
         let mut application_records = Vec::new();
         let prefix_len = messages.len();
         let mut awaiting_finished = false;
@@ -1281,6 +1388,12 @@ impl WirePeer {
             Role::Server => Role::Client,
         }
     }
+}
+
+fn framed_record(bytes: &[u8], offset: usize) -> Result<FramedRecord<'_>, WireError> {
+    let record = crate::decode_record(&bytes[offset..])
+        .map_err(|kind| WireError::Decode(DecodeError { offset, kind }))?;
+    Ok((offset, offset + record.wire_len(), record))
 }
 
 fn legacy_server_handshake(

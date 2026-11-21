@@ -1,0 +1,40 @@
+{
+  "workItem": "WTLS-218",
+  "clauses": [
+    "WTLS-CL-PENDING-CLIENTHELLO-REPLACEMENT"
+  ],
+  "objective": "Implement G6 exactly as reviewed in docs/WAP_199_PENDING_CLIENT_HELLO_PLAN.md, limited to the standalone wtls-lab adapter and its normal in-memory client/server flows. Start with a failing deterministic behavioral test at fresh B admission; report red/green. Apply same-tuple replacement only for inbound negotiating server state with a pending deadline. Reuse opening hello validation and the normal idle server negotiation path. The current random routes to the existing wire peer: byte-exact duplicates repeat the entire cached flight and differing bytes diagnose without replacement. Fresh eligible hellos run on a temporary peer from the current server context. Commit the replacement only if it is Negotiating and has a first flight that fits the budget. Alert-only, malformed, unsupported, over-budget and other rejected candidates leave the current peer and deadline usable. Replace within one slot at capacity; inherit the original pending slot deadline. Record a successfully displaced hello in the existing bounded retired history and reject it while retained. Normal expiry and admission, outbound client peers, established peer routing, duplicate full/abbreviated commit behavior and cache policy remain intact. The replacement starts a distinct transcript. A legitimate delayed previous commit must not establish, deliver data, revoke a verified cache entry, or make the replacement unusable. Verify authenticated Finished before session insertion and preserve original cache TTL and commit-time eligibility checks. No new service primitive or public API expected. Use ordinary generated hellos/commits from local test peers with fixed clocks and distinct supplied wall times. Tests cover capacity one with A, exact duplicate A, B, exact duplicate B; delayed A hello and commit; B establishes once and exchanges protected echo; a third tuple is still capacity-limited. Also cover rejected candidates (malformed, same-random conflict, and alert-only or outbound-budget failure, replay A and complete it), B just before the unchanged deadline and expiry, two fresh abbreviated offers for the same seeded cached ID including B exact replay and protected echo, and the established tuple guard. Combine coherent scenarios when sensible. Use pending_client_hello in focused test names. Reuse fixtures and helper patterns, no live clients, no attack tests, VM, networking or new dependencies. Keep production changes small and prefer adapter-only edits unless a narrowly required WirePeer fix is demonstrated. Run named tests, adapter suite and formatting. Maintainer owns docs and evidence.",
+  "paths": [
+    "src/udp.rs",
+    "src/wire.rs",
+    "tests/udp_adapter.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "udp_adapter",
+      "pending_client_hello"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "udp_adapter"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "wire_resumption"
+    ]
+  ],
+  "timeoutSeconds": 900
+}

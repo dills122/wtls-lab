@@ -283,6 +283,13 @@
         ],
         "scope": "Exact Ruflo review and 110 Rust tests. The deterministic adapter tests check the first four Random bytes in the emitted ClientHello and ServerHello against the exact supplied Unix seconds in both handshake modes. Each sender has its own wall clock, and each uses a different value on resumption. Independent monotonic milliseconds govern the adapter. The abbreviated exchange echoes a cached ID and completes on both endpoints."
       }
+    },
+    {
+      "id": "WTLS-CL-PENDING-CLIENTHELLO-REPLACEMENT",
+      "workItem": "WTLS-218",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a §10.4 and Appendix B.4, with WAP-199_103 row S-006",
+      "statement": "On a pending inbound server association, an exact duplicate of the accepted ClientHello receives its entire cached server flight. An admissible fresh ClientHello can replace the pending handshake in the same slot and retains the original slot deadline, with verified cached sessions and established associations preserved."
     }
   ]
 }

@@ -111,6 +111,12 @@ no gateway leaf prompt. The deterministic WTLS-210 gate and the historical
 manual-trust run retain their own evidence.
 [Live enrollment capture](../fixtures/HISTORICAL_PEERS.md#blackberry-native-ca-enrollment)
 
+WTLS-212 confirmed that the simulator still advertised the enrolled authority
+after a graceful restart on the same XP overlay. The gateway used a fresh
+session cache and a new leaf signed by that authority. The handset completed
+a full handshake and protected WSP exchange without a certificate prompt.
+[Live restart capture](../fixtures/HISTORICAL_PEERS.md#blackberry-ca-persistence-across-restart)
+
 ## Approved decisions
 
 - A full authenticated offer may omit the authority list. A nonempty list requires a compatible match.

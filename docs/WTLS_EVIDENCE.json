@@ -190,6 +190,22 @@
         "captureSha256": "23d89a8da8efe99c052286a02edaa4b482eb20fc847acf86464faf9962627adc",
         "scope": "Ruflo historical source review, filtered before-and-after capture, and matching protected WSP acknowledgment. CA trust was explicitly granted during enrollment. No leaf exception was used. Same simulator run."
       }
+    },
+    {
+      "id": "WTLS-CL-BLACKBERRY-CA-PERSISTENCE",
+      "workItem": "WTLS-212",
+      "status": "verified",
+      "source": "Live BlackBerry 7290 restart observation, with WAP-199 §§10.5.1.2 and 10.5.2",
+      "statement": "The stock BlackBerry 7290 simulator retains the enrolled lab authority across a graceful process restart on the same XP overlay. It authenticates a newly keyed gateway leaf signed by that authority without a certificate prompt.",
+      "evidence": {
+        "testedCommit": "08ae315e6f735204d208bb5aba45c43f193208bb",
+        "provenance": "fixtures/HISTORICAL_PEERS.md",
+        "fixture": "fixtures/blackberry-7290-ca-restart.trace",
+        "authorityModulusSha1": "8fd010db5e36541cbbd9276233d98927d86963fd",
+        "rootCertificateSha256": "1a71cd7c7ffca1f92622bf7204f846a269d5d9884f5cf8ff634428c053c6efc1",
+        "captureSha256": "6167ca09a805a65bcb40f241d69960145771ff1c2da074477f03511668bfd957",
+        "scope": "Ruflo plan review, confirmed Windows process exit and relaunch, exact CA entry in both ClientHellos, separate gateway leaves and fresh caches, and two full handshakes with verified protected WSP acknowledgments. No re-enrollment or leaf approval after restart."
+      }
     }
   ]
 }

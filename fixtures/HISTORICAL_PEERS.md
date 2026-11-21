@@ -269,4 +269,41 @@ The [13-datagram secure trace](blackberry-7290-provisioned-ca.trace) has SHA-256
 `2c09ffa78f743f612d65b3c2b4b9b798750977d9e5fc7f7590b52ab7fb8becdf`. The combined, port-filtered
 UDP 9201/9203 capture has SHA-256 `23d89a8da8efe99c052286a02edaa4b482eb20fc847acf86464faf9962627adc`.
 Evidence covers enrollment and the first full handshake in the same simulator
-run. Persistence across a simulator restart remains unverified.
+run. WTLS-212 records the separate [restart check](#blackberry-ca-persistence-across-restart).
+
+## BlackBerry CA persistence across restart
+
+WTLS-212 used the stock BlackBerry 7290 simulator (software `4.0.0.132`) and
+the provisioned-trust library from `08ae315` in the isolated XP overlay.
+Ruflo reviewed the test design. We enrolled a newly generated lab CA once
+via the Browser. The same CA certificate was used for both gateway runs,
+with an independently generated gateway key and leaf on each run. The
+strict UDP 9203 gateway started with a fresh session cache on each launch.
+
+The operator exited the simulator normally. XP showed `fledge.exe` at PID
+672 before exit, absent before relaunch, and running at PID 224 after
+relaunch with `7290.bat` on the same XP overlay. In the relaunched simulator,
+**Prompt For Server Trust** was still **Yes**. Visiting the protected page
+required no CA reimport or certificate approval.
+
+| Visit | ClientHello session ID | New session ID | Protected WSP page acknowledgment |
+| --- | --- | --- | --- |
+| `/before-restart` | `a3ae109830b84aa6` | `8813f2aca1f265df` | `2898` |
+| `/after-restart` | `8813f2aca1f265df` | `930c09359275414f` | `3af7` |
+
+Both ClientHellos advertised 29 authorities, including exactly one
+RSA/default-parameter/type-254 entry for the enrolled CA (modulus SHA-1
+`8fd010db5e36541cbbd9276233d98927d86963fd`). The one UDP 9201 enrollment
+response carried the native root (SHA-256
+`1a71cd7c7ffca1f92622bf7204f846a269d5d9884f5cf8ff634428c053c6efc1`).
+Both full handshakes carried their respective leaf in the certificate
+flight. After restart, ClientKeyExchange followed the new certificate flight
+within 0.702 seconds. The gateway verified the client Finished and the
+matching protected page acknowledgment on each connection.
+
+The [21-datagram secure trace](blackberry-7290-ca-restart.trace) has SHA-256
+`82d7827d0d5604b1ecfb9dced706d17f83e746347f1e1abba4d2b5c2f9588f62`.
+The port-filtered UDP 9201/9203 capture has SHA-256
+`6167ca09a805a65bcb40f241d69960145771ff1c2da074477f03511668bfd957`.
+The result applies to a graceful simulator application restart on the same
+XP overlay.

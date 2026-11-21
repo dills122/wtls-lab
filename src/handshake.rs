@@ -117,7 +117,7 @@ impl fmt::Display for HandshakeError {
             }
             Self::FinishedVerificationFailed => "peer Finished verification failed",
             Self::FinishedUnavailable => "could not generate Finished data",
-            Self::SequenceExhausted => "application sequence space is exhausted",
+            Self::SequenceExhausted => "record sequence space is exhausted",
         })
     }
 }
@@ -343,6 +343,16 @@ impl Handshake {
         now_ms: u64,
         finished: &impl FinishedProvider,
     ) -> Result<Vec<Action>, HandshakeError> {
+        self.with_alert_sequence(|handshake| handshake.receive_actions(datagram, now_ms, finished))
+    }
+
+    // WirePeer allocates sequences for every encoded record, including alerts.
+    pub(crate) fn receive_actions(
+        &mut self,
+        datagram: &[Message],
+        now_ms: u64,
+        finished: &impl FinishedProvider,
+    ) -> Result<Vec<Action>, HandshakeError> {
         let result = match (&self.config, &mut self.state) {
             (
                 Config::Server {
@@ -370,7 +380,7 @@ impl Handshake {
             (_, State::ServerCommit(commit)) => server_commit(commit, datagram, finished),
             (_, State::Open(open)) => {
                 if let Some(scope) = open.received_close(datagram) {
-                    return self.close(scope);
+                    return self.close_actions(scope);
                 }
                 return open.receive(datagram);
             }
@@ -393,7 +403,7 @@ impl Handshake {
                     }
                 }
                 if let Some(scope) = close {
-                    actions.extend(self.close(scope)?);
+                    actions.extend(self.close_actions(scope)?);
                 }
                 Ok(actions)
             }
@@ -410,12 +420,23 @@ impl Handshake {
         let State::Open(open) = &mut self.state else {
             return Err(HandshakeError::InvalidState);
         };
-        open.send_application(payload)
+        let result = open.send_application(payload);
+        if result == Err(HandshakeError::SequenceExhausted) {
+            self.state = State::Closed;
+        }
+        result
     }
 
     /// Both locally initiated and peer-initiated closure send one notification.
     /// The closed association ignores replies and any late application data.
     pub fn close(&mut self, scope: CloseScope) -> Result<Vec<Action>, HandshakeError> {
+        self.with_alert_sequence(|handshake| handshake.close_actions(scope))
+    }
+
+    pub(crate) fn close_actions(
+        &mut self,
+        scope: CloseScope,
+    ) -> Result<Vec<Action>, HandshakeError> {
         let State::Open(open) = &self.state else {
             return Err(HandshakeError::InvalidState);
         };
@@ -426,6 +447,32 @@ impl Handshake {
             self.cached_session = None;
         }
         Ok(vec![Action::Send(datagram), Action::Closed(scope)])
+    }
+
+    fn with_alert_sequence(
+        &mut self,
+        operation: impl FnOnce(&mut Self) -> Result<Vec<Action>, HandshakeError>,
+    ) -> Result<Vec<Action>, HandshakeError> {
+        // Closing drops Open, so read its counter before generating any actions.
+        let next_sequence = match &self.state {
+            State::Open(open) => open.next_sequence,
+            _ => 1, // The first fresh record after Finished.
+        };
+        let actions = operation(self)?;
+        // Cached flights contain no alerts. A close may carry a cached commit
+        // prefix followed by its fresh alert.
+        if actions.iter().any(|action| {
+            matches!(action, Action::Send(messages) if matches!(messages.last(), Some(Message::Alert(_))))
+        }) {
+            if u16::try_from(next_sequence).is_err() {
+                self.state = State::Closed;
+                return Err(HandshakeError::SequenceExhausted);
+            }
+            if let State::Open(open) = &mut self.state {
+                open.next_sequence += 1;
+            }
+        }
+        Ok(actions)
     }
 }
 

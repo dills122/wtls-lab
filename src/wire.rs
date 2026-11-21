@@ -12,6 +12,8 @@ mod session;
 
 #[cfg(test)]
 mod alert_tests;
+#[cfg(test)]
+pub(crate) mod sequence_tests;
 
 use std::error::Error;
 use std::fmt;
@@ -137,10 +139,10 @@ struct Direction {
 }
 
 impl Direction {
-    fn next(&mut self) -> Result<u16, WireError> {
-        let sequence = u16::try_from(self.sequence).map_err(|_| WireError::InvalidRecord)?;
+    fn next(&mut self) -> Option<u16> {
+        let sequence = u16::try_from(self.sequence).ok()?;
         self.sequence += 1;
-        Ok(sequence)
+        Some(sequence)
     }
 
     fn activate(&mut self) {
@@ -307,12 +309,17 @@ impl WirePeer {
         if payload.is_empty() || payload.len() > MAX_PLAINTEXT {
             return Err(WireError::InvalidRecord);
         }
-        let actions = self.handshake.send_application(payload)?;
-        self.apply(actions)
+        match self.handshake.send_application(payload) {
+            Ok(actions) => self.apply(actions),
+            Err(error @ HandshakeError::SequenceExhausted) => {
+                self.finish_actions(Err(error.into()), false)
+            }
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub fn close(&mut self, scope: CloseScope) -> Result<Vec<WireAction>, WireError> {
-        let actions = self.handshake.close(scope)?;
+        let actions = self.handshake.close_actions(scope)?;
         self.apply(actions)
     }
 
@@ -332,7 +339,7 @@ impl WirePeer {
             .iter()
             .find(|flight| flight.bytes == bytes)
         {
-            let actions = self.handshake.receive(
+            let actions = self.handshake.receive_actions(
                 &flight.messages,
                 monotonic_ms,
                 &WireFinished(self.traffic.as_ref(), self.selection.as_ref()),
@@ -451,7 +458,7 @@ impl WirePeer {
         );
         let actions = self
             .handshake
-            .receive(&incoming.messages, monotonic_ms, &context);
+            .receive_actions(&incoming.messages, monotonic_ms, &context);
         drop(cache);
         let actions = match actions {
             Ok(actions) => actions,
@@ -714,7 +721,9 @@ impl WirePeer {
             let (record_start, offset, record) = framed?;
             last_record = Some((record_start, offset, record));
             let message = match (read.protected, record.cipher_spec) {
-                (false, CipherSpec::Null) if record.sequence == read.next()? => {
+                (false, CipherSpec::Null)
+                    if record.sequence == read.next().ok_or(WireError::InvalidRecord)? =>
+                {
                     if record.content_type == RecordType::Alert
                         && self.status() == Status::Negotiating
                     {
@@ -956,9 +965,32 @@ impl WirePeer {
                 })
             })
             .collect::<Result<Vec<_>, _>>();
+        self.finish_actions(result, invalidate)
+    }
 
+    fn finish_actions(
+        &mut self,
+        result: Result<Vec<WireAction>, WireError>,
+        invalidate: bool,
+    ) -> Result<Vec<WireAction>, WireError> {
         if result.is_err() {
             self.handshake.abort();
+        }
+        if matches!(
+            result,
+            Err(WireError::Handshake(HandshakeError::SequenceExhausted))
+        ) {
+            self.random = None;
+            self.peer_random = None;
+            self.selection = None;
+            self.read = Direction::default();
+            self.write = Direction::default();
+            self.received_flights = Vec::new();
+            self.verified_commit = None;
+            self.sent_flights = Vec::new();
+            self.sent_checksums = Vec::new();
+            self.last_received = [0; 4];
+            self.highest_received_sequence = None;
         }
         if self.status() == Status::Closed {
             self.release_session(invalidate)?;
@@ -1028,7 +1060,7 @@ impl WirePeer {
                 } else {
                     CipherSpec::Null
                 },
-                sequence: write.next()?,
+                sequence: write.next().ok_or(HandshakeError::SequenceExhausted)?,
                 length_form: LengthForm::Explicit,
                 fragment: &plaintext,
             };

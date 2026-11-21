@@ -389,3 +389,61 @@ fn delayed_datagrams_within_the_receive_window_are_delivered_once() {
     }
     assert!(deliver(&mut server, &second, 40).is_empty());
 }
+
+#[test]
+fn sequence_exhaustion_counts_a_fresh_alert_in_the_typed_handshake() {
+    let mut client = client(Some(FIRST));
+    let mut server = server(SECOND, Some(FIRST));
+    let hello = sent(&client.start(CLIENT_RANDOM, 0).unwrap());
+    let server_flight = sent(&deliver(&mut server, &hello, 1));
+    let commit = sent(&deliver(&mut client, &server_flight, 2));
+    deliver(&mut server, &commit, 3);
+    for _ in 1..u16::MAX {
+        server.send_application(vec![1]).unwrap();
+    }
+    assert_eq!(
+        deliver(&mut server, &commit, 4),
+        [Action::Send(vec![Message::Alert(
+            Alert::DuplicateFinishedReceived
+        )])]
+    );
+    assert_eq!(
+        server.send_application(vec![2]),
+        Err(HandshakeError::SequenceExhausted)
+    );
+    assert_eq!(server.status(), Status::Closed);
+    assert_eq!(server.cached_session(), Some(FIRST));
+}
+
+#[test]
+fn sequence_exhaustion_in_the_typed_handshake_closes_and_honors_session_scope() {
+    for (local_close, scope) in [
+        (true, CloseScope::Connection),
+        (true, CloseScope::Session),
+        (false, CloseScope::Session),
+    ] {
+        let (mut client, mut server) = full_exchange();
+        for _ in 1..u16::MAX {
+            client.send_application(vec![1]).unwrap();
+        }
+        assert_eq!(
+            sent(&client.send_application(vec![2]).unwrap()),
+            [Message::ApplicationData {
+                sequence: u16::MAX,
+                payload: vec![2],
+            }]
+        );
+        let actions = if local_close {
+            client.close(scope)
+        } else {
+            let close = sent(&server.close(scope).unwrap());
+            client.receive(&close, 5, &FixtureFinished)
+        };
+        assert_eq!(actions, Err(HandshakeError::SequenceExhausted));
+        assert_eq!(client.status(), Status::Closed);
+        assert_eq!(
+            client.cached_session(),
+            (scope == CloseScope::Connection).then_some(FIRST)
+        );
+    }
+}

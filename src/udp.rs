@@ -4,6 +4,9 @@
 
 mod socket;
 
+#[cfg(test)]
+mod sequence_tests;
+
 pub use socket::SocketTransport;
 
 use std::collections::{BTreeMap, VecDeque};

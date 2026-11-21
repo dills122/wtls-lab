@@ -430,6 +430,13 @@
         ],
         "scope": "Exact Ruflo review and 145 Rust tests. A well-framed authenticated opening that reaches full selection without representable default RSA or the exact supported cipher/MAC pair yields one clear fatal handshake_failure. Wire tests check both input length forms, exact reply bytes, admission, authority and cache precedence. A rejected pending replacement preserves the incumbent deadline and byte-identical flight, and the incumbent completes protected traffic. The legacy WinWAP profile retains its existing behavior."
       }
+    },
+    {
+      "id": "WTLS-CL-ESTABLISHED-UDP-TUPLE-RECOVERY",
+      "workItem": "WTLS-223",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a §§9.1, 9.2.3.1, 10.1–10.4 and Appendix B.4",
+      "statement": "On an established inbound UDP tuple, an eligible fresh full ClientHello can stage one bounded replacement while the incumbent remains active. The gateway switches only after the candidate validates Finished and can send the final flight. Candidate rejection or expiry does not retire the incumbent."
     }
   ]
 }

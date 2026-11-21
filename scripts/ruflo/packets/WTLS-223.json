@@ -1,0 +1,41 @@
+{
+  "workItem": "WTLS-223",
+  "clauses": [
+    "WTLS-CL-ESTABLISHED-UDP-TUPLE-RECOVERY"
+  ],
+  "objective": "Implement the approved docs/WAP_199_ESTABLISHED_TUPLE_RECOVERY_PLAN.md in standalone wtls-lab. Start with a deterministic failing test for a fresh empty-ID full ClientHello on an established inbound tuple, then implement and record red/green. Keep at most one independent staged full WirePeer per established inbound slot. Admit only a fresh empty-ID ClientHello after the existing opening, authority, algorithm and egress gates. Leave outbound clients, nonempty fresh offers on established tuples, ordinary cold admission and G6 pending-only replacement behavior as reviewed. Keep first admitted candidate's fixed monotonic deadline. Replay exact A and B flights through their owners; reject same-random conflicts and remembered retired hellos. A third eligible full opening receives existing AddressInUse while a staged candidate occupies the position. Capacity remains tuple-based. Prefer active exact cached SDUs and its verified, frame-bounded resumed prefix; then candidate exact retries. For other inputs ordinary protected traffic remains active. Only a supported complete full client commit shape and a standalone clear alert are candidate-directed. Pass each complete datagram to at most one mutating receive, preserving record/authentication ownership. Promote that same B peer only when its existing full commit returns successful open state and budget-valid required final send. Publish the usual Established once, replace incumbent silently, and retain B flight history for exact retry after a lost final flight. Drop delayed A traffic through normal B receive checks. No handover Session close or cache invalidation, apart from ordinary cache insertion/expiry/capacity rules. Keep status, hello ownership, connection metadata, sends and explicit close addressed to A before promotion. Candidate terminal failure or expiry removes only B and emits no tuple-wide teardown. Candidate deadline participates in deadline scheduling and expires before routing at now >= deadline in tick and receive. Retire randoms with existing bounded history. If A independently retires, preserve its existing close/cache effects and cancel B. Delayed authenticated A close after B promotion must leave B intact. Follow the proposed test matrix: capacity-one staging and active bidirectional traffic, exact A/B retries and pending capacity, candidate retirement after verification/clear certificate rejection/timeout, initial alert and budget refusal, promotion, final flight loss, delayed A traffic, an incumbent using abbreviated prefixes, and both orders of A close and B commit. Use only normal local peer datagrams and existing regression helpers. Name new focused tests established_recovery. Preserve public Events, Diagnostic variants, WirePeer and adapter call shapes. The narrow internal helpers may reuse framing and exact replay recognition. No external network, simulator, abuse exercises, added dependencies, or Waves modifications. Maintainer owns docs and evidence.",
+  "paths": [
+    "src/udp.rs",
+    "src/udp/recovery_tests.rs",
+    "src/wire.rs",
+    "tests/udp_adapter.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "established_recovery"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "udp_adapter"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "wire_resumption",
+      "--test",
+      "provisioned_trust"
+    ]
+  ],
+  "timeoutSeconds": 900
+}

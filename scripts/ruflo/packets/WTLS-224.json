@@ -1,0 +1,43 @@
+{
+  "workItem": "WTLS-224",
+  "clauses": [
+    "WTLS-CL-ESTABLISHED-UDP-TUPLE-RESUMPTION"
+  ],
+  "objective": "Implement the approved WTLS-224 design in docs/WAP_199_ABBREVIATED_TUPLE_RECOVERY_PLAN.md in standalone wtls-lab. Begin with a deterministic failing test using ordinary local peers for a fresh resumption ClientHello on an established inbound tuple. Record red/green. Own only the listed Rust paths; maintainer owns all docs, evidence, and Git changes. Honor the plan's admission and fallback, exact incumbent verified prefix priority, whole-datagram framing and single-peer routing, fixed staging deadline, exact cache pointer recheck, successful open including application-prefixed commit, and both candidate close scopes. Keep incumbent ownership until candidate commits open. A verified candidate commit with immediate close sends its own budget-gated protected reply and reports scope via a candidate-specific diagnostic without tuple-wide events. Connection close preserves cache. Session close invalidates only the exact selected entry and established incumbent traffic remains usable. An incumbent close arriving first cancels the candidate. Reuse existing wire verification and single-candidate staging. Use a narrow typed recovery outcome with explicit verified open or immediate close, accounting for close budget and exact cache effect. Preserve ordinary full-handshake final flight budget, retry and cache gates. Preserve silent abbreviated commit and event order (Established then Deliver). Cover the five deterministic acceptance groups in the plan, including standalone commit, lost commit recovered with application prefix, byte-identical retries, same-session incumbent prefix ownership, stale ID full fallback, candidate deadline via receive and tick, cache expiry and invalidation before Finished, first-flight budget, both protected close scopes with shared and distinct entries, both close orders, and delayed incumbent traffic. Reuse existing wire fixture regressions for resume-only miss and rejection precedence where appropriate. Name new tests resumed_recovery. Use normally generated local peers with fixed wall/monotonic clocks and existing fixture credentials. Run only ordinary protocol tests. No malformed packet crafting, exploit exploration, external network, live peer, NowWAP, or Waves work. Do not change dependencies or public event shape except a scoped diagnostic variant if needed.",
+  "paths": [
+    "src/udp.rs",
+    "src/udp/recovery_tests.rs",
+    "src/wire.rs",
+    "src/handshake.rs",
+    "tests/udp_adapter.rs",
+    "tests/wire_resumption.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "resumed_recovery"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "udp_adapter"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "wire_resumption",
+      "--test",
+      "provisioned_trust"
+    ]
+  ],
+  "timeoutSeconds": 850
+}

@@ -458,6 +458,13 @@
         ],
         "scope": "Exact Ruflo review and 154 Rust tests. The incumbent serves protected traffic while a fresh full handshake is staged on the same UDP tuple. Successful Finished verification and a budget-valid final flight promote the candidate. Its flight history recovers loss exactly. Candidate rejection or expiry preserves the incumbent, and close ordering retains existing cache effects."
       }
+    },
+    {
+      "id": "WTLS-CL-ESTABLISHED-UDP-TUPLE-RESUMPTION",
+      "workItem": "WTLS-224",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a §§9.1, 9.2.3.1, 10.1–10.4, 10.5.1.2–10.5.1.3, 10.5.9, 11.1.4 and Appendix B.4",
+      "statement": "An eligible fresh session-bearing ClientHello can stage one replacement on an established inbound UDP tuple. A successful open promotes the new connection. A verified immediate candidate close preserves the incumbent and applies the close scope to cache eligibility."
     }
   ]
 }

@@ -18,8 +18,8 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 use crate::handshake::{CloseScope, HandshakeKind, Status};
 use crate::wire::{
-    ClientHello, DatagramBudget, DatagramTooLarge, ReceiveError, ResumableClient, ResumableServer,
-    WireAction, WireError, WirePeer, decode_client_hello,
+    ClientHello, DatagramBudget, DatagramTooLarge, ReceiveError, RecoveryOutcome, ResumableClient,
+    ResumableServer, WireAction, WireError, WirePeer, decode_client_hello,
 };
 use crate::{CipherSpec, RecordType, decode_record_envelope};
 
@@ -31,6 +31,8 @@ pub enum Diagnostic {
     AddressInUse,
     AtCapacity,
     PreviousClientHello,
+    /// A staged replacement verified Finished and closed in the same datagram.
+    CandidateClosed(CloseScope),
     InboundTooLarge(DatagramTooLarge),
     OutboundTooLarge(DatagramTooLarge),
     Protocol(WireError),
@@ -45,6 +47,7 @@ impl fmt::Display for Diagnostic {
             Self::PreviousClientHello => {
                 f.write_str("ClientHello from a recently retired handshake")
             }
+            Self::CandidateClosed(scope) => write!(f, "recovery candidate closed: {scope:?}"),
             Self::InboundTooLarge(error) => write!(f, "inbound {error}"),
             Self::OutboundTooLarge(error) => write!(f, "outbound {error}"),
             Self::Protocol(error) => error.fmt(f),
@@ -98,8 +101,8 @@ struct RecoveryCandidate {
 /// One capacity covers all live associations, including negotiations. A full
 /// table refuses new associations. An inbound handshake gets a fixed deadline
 /// from the slot's first accepted ClientHello, across retries and replacements.
-/// An established inbound peer can stage one full handshake with its own fixed
-/// deadline. The incumbent serves the tuple until the staged handshake commits.
+/// An established inbound peer can stage one replacement with its own fixed
+/// deadline. The incumbent serves the tuple until the replacement commits open.
 /// Established and outbound peers follow WirePeer's lifecycle. The most recent
 /// `capacity` server-side (address, ClientHello random) pairs from closed, expired,
 /// or displaced handshakes are kept in FIFO order to reject stale hellos. The shared
@@ -323,9 +326,6 @@ impl Adapter {
             if self.retired_hellos.contains(&(remote, random)) {
                 return diagnostic(remote, Diagnostic::PreviousClientHello);
             }
-            if !hello.session_id.is_empty() {
-                return self.drive(remote, receive);
-            }
             if candidate.is_some() {
                 return diagnostic(remote, Diagnostic::AddressInUse);
             }
@@ -341,7 +341,7 @@ impl Adapter {
             return events;
         }
 
-        if candidate.is_some() && WirePeer::is_full_commit_or_clear_alert(bytes) {
+        if candidate.is_some_and(|staged| staged.peer.recognizes_candidate_input(bytes)) {
             return self.receive_candidate(remote, bytes, monotonic_ms);
         }
         self.drive(remote, receive)
@@ -355,43 +355,42 @@ impl Adapter {
     ) -> Vec<Event> {
         let entry = self.associations.get_mut(&remote).unwrap();
         let candidate = entry.candidate.as_mut().unwrap();
-        let actions = candidate
+        let outcome = candidate
             .peer
             .receive_recovery(bytes, monotonic_ms, self.budget);
-        let status = candidate.peer.status();
-        let events = self.events(remote, actions);
-        if status == Status::Negotiating {
-            return events;
-        }
-        let entry = self.associations.get_mut(&remote).unwrap();
-        let candidate = entry.candidate.take().unwrap();
-        match status {
-            Status::Open
-                if has_send(&events)
-                    && events.iter().any(|event| {
-                        matches!(
-                            event,
-                            Event::Established {
-                                kind: HandshakeKind::Full,
-                                ..
-                            }
-                        )
-                    }) =>
-            {
+        let (actions, promote) = match outcome {
+            Ok(RecoveryOutcome::VerifiedOpen(actions)) => (Ok(actions), true),
+            Ok(RecoveryOutcome::VerifiedClose { scope, actions }) => {
+                let candidate = entry.candidate.take().unwrap();
+                self.remember_retired_hello(remote, candidate.client_random);
+                let mut events: Vec<_> = actions
+                    .into_iter()
+                    .filter_map(|action| match action {
+                        WireAction::Send(bytes) => Some(self.send_event(remote, bytes)),
+                        _ => None,
+                    })
+                    .collect();
+                events.push(Event::Diagnostic {
+                    remote,
+                    reason: Diagnostic::CandidateClosed(scope),
+                });
+                return events;
+            }
+            Ok(RecoveryOutcome::Incomplete(actions)) => (Ok(actions), false),
+            Err(error) => (Err(error), false),
+        };
+        if candidate.peer.status() != Status::Negotiating {
+            let candidate = entry.candidate.take().unwrap();
+            if promote {
                 entry.peer = candidate.peer;
                 if let Some(random) = entry.client_random.replace(candidate.client_random) {
                     self.remember_retired_hello(remote, random);
                 }
-                events
-            }
-            _ => {
+            } else {
                 self.remember_retired_hello(remote, candidate.client_random);
-                events
-                    .into_iter()
-                    .filter(|event| matches!(event, Event::Send { .. } | Event::Diagnostic { .. }))
-                    .collect()
             }
         }
+        self.events(remote, actions)
     }
 
     fn begin_inbound(

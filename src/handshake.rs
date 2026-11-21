@@ -276,6 +276,13 @@ impl Handshake {
         self.state = State::Closed;
     }
 
+    pub(crate) fn pending_server_kind(&self) -> Option<HandshakeKind> {
+        match &self.state {
+            State::ServerCommit(commit) => Some(commit.kind),
+            _ => None,
+        }
+    }
+
     pub fn cached_session(&self) -> Option<SessionId> {
         self.cached_session
     }

@@ -168,6 +168,27 @@ pub enum WireAction {
     TimedOut,
 }
 
+pub(crate) enum RecoveryOutcome {
+    Incomplete(Vec<WireAction>),
+    VerifiedOpen(Vec<WireAction>),
+    /// The protected reply is encoded and the selected session has been
+    /// released, with exact cache invalidation for session scope.
+    VerifiedClose {
+        scope: CloseScope,
+        actions: Vec<WireAction>,
+    },
+}
+
+impl RecoveryOutcome {
+    fn into_actions(self) -> Vec<WireAction> {
+        match self {
+            Self::Incomplete(actions)
+            | Self::VerifiedOpen(actions)
+            | Self::VerifiedClose { actions, .. } => actions,
+        }
+    }
+}
+
 enum Side {
     Client(TrustAnchor),
     Server(Rsa<Private>),
@@ -403,6 +424,7 @@ impl WirePeer {
         verify: impl FnOnce(&TrustAnchor, &[u8], u32) -> Result<VerifiedLeaf, CertificateFailure>,
     ) -> Result<Vec<WireAction>, ReceiveError> {
         self.receive_inner(bytes, monotonic_ms, verify, None)
+            .map(RecoveryOutcome::into_actions)
     }
 
     pub(crate) fn receive_recovery(
@@ -410,7 +432,7 @@ impl WirePeer {
         bytes: &[u8],
         monotonic_ms: u64,
         budget: DatagramBudget,
-    ) -> Result<Vec<WireAction>, ReceiveError> {
+    ) -> Result<RecoveryOutcome, ReceiveError> {
         self.receive_inner(
             bytes,
             monotonic_ms,
@@ -456,54 +478,75 @@ impl WirePeer {
     }
 
     /// Identify the candidate's supported record shape without opening records.
-    pub(crate) fn is_full_commit_or_clear_alert(bytes: &[u8]) -> bool {
-        if bytes.is_empty() {
+    pub(crate) fn recognizes_candidate_input(&self, bytes: &[u8]) -> bool {
+        let Some(kind) = self.handshake.pending_server_kind() else {
             return false;
-        }
-        let Ok(first) = crate::decode_record(bytes) else {
+        };
+        let Ok((_, end, first)) = framed_record(bytes, 0) else {
             return false;
         };
         if first.cipher_spec != CipherSpec::Null {
             return false;
         }
         if first.content_type == RecordType::Alert {
-            return first.wire_len() == bytes.len();
+            return end == bytes.len();
         }
-        // The staged peer has consumed only ClientHello (clear sequence 0).
-        if first.content_type != RecordType::Handshake
-            || first.sequence != 1
-            || !matches!(
-                decode_handshake(first.fragment),
-                Ok(Message::ClientKeyExchange(_))
-            )
-        {
-            return false;
-        }
-        let remaining = &bytes[first.wire_len()..];
-        if remaining.is_empty() {
-            return false;
-        }
-        let Ok(ccs) = crate::decode_record(remaining) else {
-            return false;
+
+        // ClientHello consumed clear sequence 0. Full negotiation also
+        // consumes a ClientKeyExchange before ChangeCipherSpec.
+        let (ccs, end, sequence) = match kind {
+            HandshakeKind::Full => {
+                if first.content_type != RecordType::Handshake
+                    || first.sequence != 1
+                    || !matches!(
+                        decode_handshake(first.fragment),
+                        Ok(Message::ClientKeyExchange(_))
+                    )
+                {
+                    return false;
+                }
+                let Ok((_, end, ccs)) = framed_record(bytes, end) else {
+                    return false;
+                };
+                (ccs, end, 2)
+            }
+            HandshakeKind::Resumed => (first, end, 1),
         };
         if ccs.content_type != RecordType::ChangeCipherSpec
             || ccs.cipher_spec != CipherSpec::Null
-            || ccs.sequence != 2
+            || ccs.sequence != sequence
             || ccs.fragment != [1]
         {
             return false;
         }
-        let remaining = &remaining[ccs.wire_len()..];
-        if remaining.is_empty() {
-            return false;
-        }
-        let Ok(finished) = crate::decode_record(remaining) else {
+        let Ok((_, mut end, finished)) = framed_record(bytes, end) else {
             return false;
         };
-        finished.content_type == RecordType::Handshake
-            && finished.cipher_spec == CipherSpec::Current
-            && finished.sequence == 0
-            && finished.wire_len() == remaining.len()
+        if finished.content_type != RecordType::Handshake
+            || finished.cipher_spec != CipherSpec::Current
+            || finished.sequence != 0
+        {
+            return false;
+        }
+        if kind == HandshakeKind::Full {
+            return end == bytes.len();
+        }
+
+        let suffix_start = end;
+        while end < bytes.len() {
+            let Ok((start, next, record)) = framed_record(bytes, end) else {
+                return false;
+            };
+            if record.cipher_spec != CipherSpec::Current {
+                return false;
+            }
+            match record.content_type {
+                RecordType::Alert => return start == suffix_start && next == bytes.len(),
+                RecordType::ApplicationData => end = next,
+                _ => return false,
+            }
+        }
+        true
     }
 
     fn receive_inner(
@@ -512,9 +555,9 @@ impl WirePeer {
         monotonic_ms: u64,
         verify: impl FnOnce(&TrustAnchor, &[u8], u32) -> Result<VerifiedLeaf, CertificateFailure>,
         recovery_budget: Option<DatagramBudget>,
-    ) -> Result<Vec<WireAction>, ReceiveError> {
+    ) -> Result<RecoveryOutcome, ReceiveError> {
         if self.status() == Status::Closed {
-            return Ok(Vec::new());
+            return Ok(RecoveryOutcome::Incomplete(Vec::new()));
         }
 
         // Only previously validated handshake SDUs bypass the current epoch's
@@ -526,7 +569,7 @@ impl WirePeer {
                 &WireFinished(self.traffic.as_ref(), self.selection.as_ref()),
                 |_, _| {},
             )?;
-            return Ok(self.apply(actions)?);
+            return Ok(RecoveryOutcome::Incomplete(self.apply(actions)?));
         }
 
         let mut incoming = match self.decode(bytes, monotonic_ms) {
@@ -577,7 +620,7 @@ impl WirePeer {
                     fragment: &fragment,
                 }])
                 .map_err(WireError::Encode)?;
-                return Ok(vec![WireAction::Send(reply)]);
+                return Ok(RecoveryOutcome::Incomplete(vec![WireAction::Send(reply)]));
             }
         }
 
@@ -748,7 +791,7 @@ impl WirePeer {
                 bytes: bytes.to_vec(),
             });
         }
-        let result = self.apply(actions)?;
+        let mut result = self.apply(actions)?;
         if let Some((HandshakeKind::Full, id)) = established {
             // A staged peer's session can enter the shared cache only if the
             // final flight can be sent. Return its actions for budget diagnostics.
@@ -759,6 +802,8 @@ impl WirePeer {
             }) {
                 self.handshake.abort();
                 self.release_session(false)?;
+                result.retain(|action| !matches!(action, WireAction::Established(_)));
+                return Ok(RecoveryOutcome::Incomplete(result));
             } else if let Err(error) = self.cache_full_session(id, monotonic_ms) {
                 self.handshake.abort();
                 self.traffic = None;
@@ -766,7 +811,18 @@ impl WirePeer {
                 return Err(error.into());
             }
         }
-        Ok(result)
+        let closed_scope = result.iter().find_map(|action| match action {
+            WireAction::Closed(scope) => Some(*scope),
+            _ => None,
+        });
+        Ok(match (established, closed_scope) {
+            (Some(_), Some(scope)) => RecoveryOutcome::VerifiedClose {
+                scope,
+                actions: result,
+            },
+            (Some(_), None) => RecoveryOutcome::VerifiedOpen(result),
+            (None, _) => RecoveryOutcome::Incomplete(result),
+        })
     }
 
     fn certificate_alert(
@@ -1391,7 +1447,14 @@ impl WirePeer {
 }
 
 fn framed_record(bytes: &[u8], offset: usize) -> Result<FramedRecord<'_>, WireError> {
-    let record = crate::decode_record(&bytes[offset..])
+    let remaining = &bytes[offset..];
+    if remaining.is_empty() {
+        return Err(WireError::Decode(DecodeError {
+            offset,
+            kind: DecodeErrorKind::EmptyDatagram,
+        }));
+    }
+    let record = crate::decode_record(remaining)
         .map_err(|kind| WireError::Decode(DecodeError { offset, kind }))?;
     Ok((offset, offset + record.wire_len(), record))
 }

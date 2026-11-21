@@ -248,6 +248,13 @@
         ],
         "scope": "Exact Ruflo review and 107 Rust tests. Both provisioned wire roles exercise the last record, automatic retirement, and resumption with the preserved session. Coverage includes alert output, explicit invalidation, and UDP retirement."
       }
+    },
+    {
+      "id": "WTLS-CL-FULL-FINAL-FLIGHT-RETRY",
+      "workItem": "WTLS-216",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a §10.4, with WAP-199_103 rows S-006/C-006",
+      "statement": "During a full UDP handshake, loss of the final server CCS/Finished SDU triggers byte-identical retransmission of the entire client commit at its deadline and byte-identical retransmission of the server commit in response. The recovered association carries protected application data."
     }
   ]
 }

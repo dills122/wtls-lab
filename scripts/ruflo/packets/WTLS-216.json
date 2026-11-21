@@ -1,0 +1,32 @@
+{
+  "workItem": "WTLS-216",
+  "clauses": [
+    "WTLS-CL-FULL-FINAL-FLIGHT-RETRY"
+  ],
+  "objective": "Close only G2 in docs/WAP_199_EVIDENCE_MATRIX.md by adding one deterministic test to tests/udp_adapter.rs. Name the test lost_final_server_finished_flight_retries_and_echoes_protected_data. Use the existing Adapter, in-memory Link, fixed wall time and explicit monotonic times and assertions. Start a full authenticated handshake with fresh contexts, deliver the ServerHello and entire client commit, and withhold only the final server CCS plus protected Finished datagram. Check its record layout and confirm the server establishes Full exactly once while the client is still negotiating. Assert the exact client retry deadline and no send immediately before it. Compare the complete retried client commit datagram byte for byte against the originally delivered client commit. Deliver the retry to the open server and assert its sole action is to send a byte-identical copy of its original complete final flight, with no duplicate Established event. Deliver the repeated final server flight, verify client Established(Full), both endpoints Open, and no pending client retry. Exchange an application request and a matching protected echo through the same adapters, with current-cipher wire records and delivered payloads in both directions. Reuse existing test helpers. Test coverage slice only: current runtime is expected to pass, so a red step is unnecessary. If a runtime defect is observed, report precise results without modifying protocol code. Run named focused test and adapter suite, then formatting. Keep all other gaps open. No live clients or VM work. Maintainer owns docs and evidence.",
+  "paths": [
+    "tests/udp_adapter.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "udp_adapter",
+      "lost_final_server_finished_flight_retries_and_echoes_protected_data",
+      "--",
+      "--exact"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "udp_adapter"
+    ]
+  ],
+  "timeoutSeconds": 480
+}

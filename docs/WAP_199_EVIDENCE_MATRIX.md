@@ -119,10 +119,10 @@ checking that checksum. Even a matching clear fatal alert currently leaves
 the Rust client negotiating. §10.2.2 separates ending the failed negotiation
 from preserving an existing valid session on a clear fatal alert. A bad
 native leaf also closes the local client with `CertificateRejected` while
-the gateway remains negotiating. Review checksum and closure handling
-together with the scope of peer-visible error alerts. Add a direct generic
-critical receive check on the server if that behavior stays in the promise.
-[Clear receive path](../src/wire.rs#L717) · [Clear fatal test](../src/wire/alert_tests.rs#L263) · [Trust rejection](../tests/provisioned_trust.rs#L486) · [Generic critical receive](../src/wire/alert_tests.rs#L344)
+the gateway remains negotiating. The Ruflo-reviewed receive plan covers
+checksum correlation, pending termination, cache preservation, and
+protected-state regressions. New outbound certificate alerts are separate.
+[WTLS-219 review plan](WAP_199_CLEAR_ALERT_PLAN.md) · [Clear receive path](../src/wire.rs#L723) · [Trust rejection](../tests/provisioned_trust.rs#L486)
 
 ### G4. Multiple application records per SDU
 

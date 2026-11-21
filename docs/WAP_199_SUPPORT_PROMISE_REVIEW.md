@@ -94,3 +94,7 @@ evidence is recorded at `32f112a`.
 WTLS-222 verified the server alert for well-formed offers with no
 selectable full-handshake algorithms at `036ce51`.
 [Algorithm mismatch alert design](WAP_199_ALGORITHM_MISMATCH_ALERT_PLAN.md)
+
+WTLS-223 proposes staging a full handshake alongside the incumbent
+on the same UDP address and port until the replacement verifies Finished.
+[Established tuple recovery design](WAP_199_ESTABLISHED_TUPLE_RECOVERY_PLAN.md)

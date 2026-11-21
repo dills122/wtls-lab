@@ -16,6 +16,8 @@ pub struct ResumableServer {
 }
 
 impl ResumableServer {
+    /// Start a fresh cache for this identity and its certificate-selection
+    /// policy. Use a provisioned identity to require authority matching.
     pub fn new(identity: ServerIdentity, capacity: NonZeroUsize, lifetime_ms: NonZeroU64) -> Self {
         Self {
             identity,
@@ -36,6 +38,7 @@ impl ResumableServer {
 pub struct ResumableClient {
     retry: RetryPolicy,
     trust: TrustAnchor,
+    advertise_authority: bool,
     cache: SharedCache,
 }
 
@@ -44,14 +47,26 @@ impl ResumableClient {
         Self {
             retry,
             trust,
+            advertise_authority: false,
             cache: SessionCache::shared(NonZeroUsize::MIN, lifetime_ms),
         }
+    }
+
+    /// Start a fresh cache for a client that advertises its provisioned authority.
+    pub fn provisioned(retry: RetryPolicy, trust: TrustAnchor, lifetime_ms: NonZeroU64) -> Self {
+        let mut context = Self::new(retry, trust, lifetime_ms);
+        context.advertise_authority = true;
+        context
     }
 
     /// Create a peer with the given certificate wall clock. All peers created
     /// by this context must use the same monotonic millisecond time base.
     pub fn peer(&self, now: u32) -> Result<WirePeer, WireError> {
-        let mut peer = WirePeer::client(self.retry, self.trust.clone(), now);
+        let mut peer = if self.advertise_authority {
+            WirePeer::provisioned_client(self.retry, self.trust.clone(), now)
+        } else {
+            WirePeer::client(self.retry, self.trust.clone(), now)
+        };
         peer.cache = Some(self.cache.clone());
         Ok(peer)
     }

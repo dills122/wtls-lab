@@ -37,8 +37,8 @@ pub use report::{
 pub use session::{ResumableClient, ResumableServer};
 
 use codec::{
-    FIXED_PARAMETERS, ServerSelection, decode_legacy_client_key_exchange, encode_alert,
-    encode_unknown_key_id,
+    FIXED_PARAMETERS, InitialAlert, ServerSelection, decode_legacy_client_key_exchange,
+    encode_alert, encode_client_hello,
 };
 use legacy::WINWAP_PARAMETERS;
 use protection::{MAX_PLAINTEXT, Traffic, WireFinished};
@@ -174,6 +174,7 @@ struct Incoming<'a> {
 /// The caller delivers the emitted bytes to the other peer and drives the clock.
 pub struct WirePeer {
     side: Side,
+    authority_id: Option<[u8; 20]>,
     handshake: Handshake,
     now: u32,
     credential_validity: Option<RangeInclusive<u32>>,
@@ -203,10 +204,20 @@ impl WirePeer {
         )
     }
 
+    /// Opt into the provisioned profile and advertise the same authority used
+    /// to verify the gateway's native WTLS certificate.
+    pub fn provisioned_client(retry: RetryPolicy, trust: TrustAnchor, now: u32) -> Self {
+        let authority = trust.authority_id();
+        let mut peer = Self::client(retry, trust, now);
+        peer.authority_id = Some(authority);
+        peer
+    }
+
     pub fn server(identity: ServerIdentity, now: u32) -> Result<Self, WireError> {
         let (random, session) = server_parameters(now)?;
         let handshake = Handshake::server(session, random, identity.certificate, None);
         let mut peer = Self::new(Side::Server(identity.key), handshake, now, Some(random));
+        peer.authority_id = identity.authority_id;
         peer.credential_validity = Some(identity.validity);
         Ok(peer)
     }
@@ -228,6 +239,7 @@ impl WirePeer {
     fn new(side: Side, handshake: Handshake, now: u32, random: Option<[u8; 16]>) -> Self {
         Self {
             side,
+            authority_id: None,
             handshake,
             now,
             credential_validity: None,
@@ -350,8 +362,10 @@ impl WirePeer {
             if !matches!(incoming.messages.as_slice(), [Message::ClientHello { .. }]) {
                 return Err(HandshakeError::UnexpectedDatagram.into());
             }
-            if !self.prepare_server_hello(&mut incoming, &offer, fragment, monotonic_ms)? {
-                let fragment = encode_unknown_key_id(incoming.checksum);
+            if let Some(alert) =
+                self.prepare_server_hello(&mut incoming, &offer, fragment, monotonic_ms)?
+            {
+                let fragment = alert.encode(incoming.checksum);
                 let reply = crate::encode_datagram(&[Record {
                     content_type: RecordType::Alert,
                     cipher_spec: CipherSpec::Null,
@@ -540,7 +554,7 @@ impl WirePeer {
         offer: &ClientHello<'_>,
         fragment: &[u8],
         monotonic_ms: u64,
-    ) -> Result<bool, WireError> {
+    ) -> Result<Option<InitialAlert>, WireError> {
         let offered = offer.offered_session();
         let cached = if let Some(id) = offered {
             self.find_session(Some(id), monotonic_ms)?
@@ -548,19 +562,26 @@ impl WirePeer {
         } else {
             None
         };
-        let parameters = match (&self.side, &cached) {
-            (_, Some(entry)) => entry.parameters,
-            (Side::LegacyServer(_), None) => WINWAP_PARAMETERS,
-            (_, None) => FIXED_PARAMETERS,
-        };
-
         if cached.is_none()
             && matches!(self.side, Side::Server(_))
             && !offer.session_id.is_empty()
             && offer.key_exchanges.is_empty()
         {
-            return Ok(false);
+            return Ok(Some(InitialAlert::UnknownKeyId));
         }
+        // A conflicting list rejects a full offer or a cache hit before
+        // installing traffic keys or assigning a new session ID.
+        if self
+            .authority_id
+            .is_some_and(|authority| !offer.allows_authority(authority))
+        {
+            return Ok(Some(InitialAlert::HandshakeFailure));
+        }
+        let parameters = match (&self.side, &cached) {
+            (_, Some(entry)) => entry.parameters,
+            (Side::LegacyServer(_), None) => WINWAP_PARAMETERS,
+            (_, None) => FIXED_PARAMETERS,
+        };
         let selection = ServerSelection::choose(offer, fragment, parameters, cached.is_some())?;
         if let Some(session) = &cached {
             let local = self.random.ok_or(WireError::InvalidRecord)?;
@@ -594,7 +615,7 @@ impl WirePeer {
             .set_idle_cached_session(cached.as_ref().map(|session| session.id))?;
         self.session = cached.as_ref().map(Arc::downgrade);
         incoming.selection = Some(selection);
-        Ok(true)
+        Ok(None)
     }
 
     fn cache_full_session(&mut self, id: SessionId, monotonic_ms: u64) -> Result<(), WireError> {
@@ -861,9 +882,16 @@ impl WirePeer {
         } else {
             None
         };
+        // The initial flight is retained for retransmission. Use its actual
+        // fragment for Finished, including the provisioned authority vector.
+        let sent = self.sent_flights.first().ok_or(WireError::InvalidRecord)?;
+        let client_hello = crate::decode_record(&sent.bytes)
+            .map_err(|_| WireError::InvalidRecord)?
+            .fragment;
         let selected = ServerSelection::accept(
             &hello,
             fragment,
+            client_hello,
             cached.as_ref().map(|session| session.parameters),
         )?;
         let local = self.random.ok_or(WireError::InvalidRecord)?;
@@ -981,6 +1009,10 @@ impl WirePeer {
                 Message::ApplicationData { payload, .. } => {
                     (RecordType::ApplicationData, payload.clone())
                 }
+                Message::ClientHello { random, resume } => (
+                    RecordType::Handshake,
+                    encode_client_hello(random, *resume, self.authority_id)?,
+                ),
                 _ => (
                     RecordType::Handshake,
                     match &self.selection {

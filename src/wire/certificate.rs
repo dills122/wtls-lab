@@ -31,25 +31,16 @@ impl TrustAnchor {
         })
     }
 
+    pub(super) fn authority_id(&self) -> [u8; 20] {
+        authority_id(&self.key)
+    }
+
     pub(super) fn verify(&self, certificate: &[u8], now: u32) -> Result<VerifiedLeaf, WireError> {
         let certificate = parse(certificate).map_err(|_| WireError::CertificateRejected)?;
-        if certificate.issuer != self.issuer
-            || certificate.subject != self.subject
-            || !certificate.validity.contains(&now)
-            || certificate.signature.len() != self.key.size() as usize
-        {
+        if certificate.subject != self.subject || !certificate.validity.contains(&now) {
             return Err(WireError::CertificateRejected);
         }
-
-        // WTLS rsa_sha signs the raw SHA-1 digest with PKCS #1 block type 1.
-        let mut digest = vec![0u8; self.key.size() as usize];
-        let len = self
-            .key
-            .public_decrypt(certificate.signature, &mut digest, Padding::PKCS1)
-            .map_err(|_| WireError::CertificateRejected)?;
-        if len != 20 || !memcmp::eq(&digest[..len], &sha1(certificate.tbs)) {
-            return Err(WireError::CertificateRejected);
-        }
+        certificate.verify_issuer(&self.issuer, &self.key)?;
         Ok(VerifiedLeaf {
             key: certificate.key,
             validity: certificate.validity,
@@ -67,20 +58,48 @@ pub struct ServerIdentity {
     pub(super) certificate: Vec<u8>,
     pub(super) key: Rsa<Private>,
     pub(super) validity: RangeInclusive<u32>,
+    pub(super) authority_id: Option<[u8; 20]>,
 }
 
 impl ServerIdentity {
     pub fn new(certificate: Vec<u8>, key: Rsa<Private>) -> Result<Self, WireError> {
+        Self::bind(certificate, key, None)
+    }
+
+    /// Opt into authority-based selection using the issuing RSA public key.
+    /// Checks the native leaf's issuer, signature and binding to the gateway key.
+    pub fn provisioned(
+        certificate: Vec<u8>,
+        key: Rsa<Private>,
+        issuer: &str,
+        authority: Rsa<Public>,
+    ) -> Result<Self, WireError> {
+        check_rsa_key(&authority)?;
+        Self::bind(certificate, key, Some((issuer, &authority)))
+    }
+
+    fn bind(
+        certificate: Vec<u8>,
+        key: Rsa<Private>,
+        authority: Option<(&str, &RsaRef<Public>)>,
+    ) -> Result<Self, WireError> {
         check_rsa_key(&key)?;
         let leaf = parse(&certificate).map_err(|_| WireError::CertificateRejected)?;
         if leaf.key.n() != key.n() || leaf.key.e() != key.e() {
             return Err(WireError::CertificateRejected);
         }
+        let authority_id = if let Some((issuer, authority)) = authority {
+            leaf.verify_issuer(issuer, authority)?;
+            Some(authority_id(authority))
+        } else {
+            None
+        };
         let validity = leaf.validity;
         Ok(Self {
             certificate,
             key,
             validity,
+            authority_id,
         })
     }
 }
@@ -120,6 +139,28 @@ struct Leaf<'a> {
     validity: RangeInclusive<u32>,
     key: Rsa<Public>,
     signature: &'a [u8],
+}
+
+impl Leaf<'_> {
+    fn verify_issuer(&self, issuer: &str, key: &RsaRef<Public>) -> Result<(), WireError> {
+        if self.issuer != issuer || self.signature.len() != key.size() as usize {
+            return Err(WireError::CertificateRejected);
+        }
+        // WTLS rsa_sha signs the raw SHA-1 digest with PKCS #1 block type 1.
+        let mut digest = vec![0; key.size() as usize];
+        let len = key
+            .public_decrypt(self.signature, &mut digest, Padding::PKCS1)
+            .map_err(|_| WireError::CertificateRejected)?;
+        if len != 20 || !memcmp::eq(&digest[..len], &sha1(self.tbs)) {
+            return Err(WireError::CertificateRejected);
+        }
+        Ok(())
+    }
+}
+
+fn authority_id(key: &RsaRef<Public>) -> [u8; 20] {
+    // WAP-199_105 hashes the unsigned modulus, with no DER sign octet.
+    sha1(&key.n().to_vec())
 }
 
 fn parse(data: &[u8]) -> Result<Leaf<'_>, WireError> {

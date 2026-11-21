@@ -9,14 +9,8 @@ const TRIPLE_DES: u8 = 6;
 const SHA: u8 = 3;
 pub(super) const EXPLICIT_SEQUENCE: u8 = 2;
 const WTLS_CERT: u8 = 1;
-const CLIENT_PROFILE: &[u8] = &[
-    0,
-    3,
-    RSA,
-    0,
-    0, // one KeyExchangeId for RSA, default parameters, null identifier
-    0,
-    0, // no advertised CA IDs, the client uses a provisioned trust anchor
+const KEY_HASH: u8 = 254;
+const CLIENT_RECORD_CHOICES: &[u8] = &[
     2,
     TRIPLE_DES,
     SHA,
@@ -83,13 +77,22 @@ impl ClientHello<'_> {
 
     fn select_key_exchange(&self, parameters: NegotiatedParameters) -> Result<u8, &'static str> {
         self.check_record_choices(parameters)?;
-        // Client identifiers and advertised server trust hints are metadata.
+        // Treat key-exchange identifiers independently of trusted authorities.
         let index = self
             .key_exchanges
             .iter()
             .position(|key| key.suite == parameters.key_exchange && key.parameter_index == 0)
             .ok_or("no compatible default-parameter key exchange offered")?;
         u8::try_from(index + 1).map_err(|_| "selected key exchange index exceeds 255")
+    }
+
+    pub(super) fn allows_authority(&self, authority: [u8; 20]) -> bool {
+        self.trusted_keys.is_empty()
+            || self.trusted_keys.iter().any(|key| {
+                key.suite == RSA
+                    && key.parameter_index == 0
+                    && key.identifier == KeyIdentifier::KeyHash(authority)
+            })
     }
 
     pub(super) fn check_record_choices(
@@ -122,12 +125,8 @@ impl ClientHello<'_> {
 pub(super) struct ServerSelection {
     pub(super) parameters: NegotiatedParameters,
     key_exchange_index: u8,
-    received_hello: ReceivedHello,
-}
-
-enum ReceivedHello {
-    Client(Vec<u8>),
-    Server(Vec<u8>),
+    client_hello: Vec<u8>,
+    received_server_hello: Option<Vec<u8>>,
 }
 
 impl ServerSelection {
@@ -151,13 +150,15 @@ impl ServerSelection {
         Ok(Self {
             parameters,
             key_exchange_index,
-            received_hello: ReceivedHello::Client(bytes.to_vec()),
+            client_hello: bytes.to_vec(),
+            received_server_hello: None,
         })
     }
 
     pub(super) fn accept(
         hello: &ServerHello<'_>,
-        bytes: &[u8],
+        server_hello: &[u8],
+        client_hello: &[u8],
         cached: Option<NegotiatedParameters>,
     ) -> Result<Self, WireError> {
         // The native ClientHello offers only the fixed suite and explicit
@@ -178,15 +179,16 @@ impl ServerSelection {
         Ok(Self {
             parameters,
             key_exchange_index: hello.key_exchange_index,
-            received_hello: ReceivedHello::Server(bytes.to_vec()),
+            client_hello: client_hello.to_vec(),
+            received_server_hello: Some(server_hello.to_vec()),
         })
     }
 
     pub(super) fn encode(&self, message: &Message) -> Result<Vec<u8>, WireError> {
-        // Hash the received hello as sent, including unused offers and key IDs.
-        match (&self.received_hello, message) {
-            (ReceivedHello::Client(bytes), Message::ClientHello { .. })
-            | (ReceivedHello::Server(bytes), Message::ServerHello { .. }) => Ok(bytes.clone()),
+        // Use the original wire hellos in Finished, including unused offers and IDs.
+        match (message, &self.received_server_hello) {
+            (Message::ClientHello { .. }, _) => Ok(self.client_hello.clone()),
+            (Message::ServerHello { .. }, Some(bytes)) => Ok(bytes.clone()),
             _ => encode_handshake_with_selection(message, self.parameters, self.key_exchange_index),
         }
     }
@@ -302,7 +304,7 @@ fn parse_key_exchanges(bytes: &[u8]) -> Result<Vec<KeyExchangeOffer<'_>>, WireEr
                 name: reader.nonempty_short_vector()?,
             },
             2 => KeyIdentifier::Binary(reader.nonempty_short_vector()?),
-            254 => KeyIdentifier::KeyHash(reader.array()?),
+            KEY_HASH => KeyIdentifier::KeyHash(reader.array()?),
             255 => KeyIdentifier::X509Name(reader.nonempty_short_vector()?),
             _ => return Err(WireError::InvalidMessage),
         };
@@ -321,6 +323,29 @@ pub fn encode_handshake(message: &Message) -> Result<Vec<u8>, WireError> {
     encode_handshake_with_selection(message, FIXED_PARAMETERS, 1)
 }
 
+pub(super) fn encode_client_hello(
+    random: &[u8; 16],
+    resume: Option<SessionId>,
+    authority: Option<[u8; 20]>,
+) -> Result<Vec<u8>, WireError> {
+    let mut body = vec![VERSION];
+    body.extend_from_slice(random);
+    write_session(&mut body, resume);
+    write_vector(&mut body, &[RSA, 0, 0])?;
+    if let Some(id) = authority {
+        let mut entry = [0; 23];
+        entry[..3].copy_from_slice(&[RSA, 0, KEY_HASH]);
+        entry[3..].copy_from_slice(&id);
+        write_vector(&mut body, &entry)?;
+    } else {
+        write_vector(&mut body, &[])?;
+    }
+    body.extend_from_slice(CLIENT_RECORD_CHOICES);
+    let mut message = vec![1];
+    write_vector(&mut message, &body)?;
+    Ok(message)
+}
+
 fn encode_handshake_with_selection(
     message: &Message,
     parameters: NegotiatedParameters,
@@ -329,11 +354,7 @@ fn encode_handshake_with_selection(
     let mut body = Vec::new();
     let kind = match message {
         Message::ClientHello { random, resume } => {
-            body.push(VERSION);
-            body.extend_from_slice(random);
-            write_session(&mut body, *resume);
-            body.extend_from_slice(CLIENT_PROFILE);
-            1
+            return encode_client_hello(random, *resume, None);
         }
         Message::ServerHello { random, session } => {
             body.push(parameters.version);
@@ -489,9 +510,20 @@ fn write_session(out: &mut Vec<u8>, session: Option<SessionId>) {
     }
 }
 
-pub(super) fn encode_unknown_key_id(checksum: [u8; 4]) -> [u8; 6] {
-    let [a, b, c, d] = checksum;
-    [2, 52, a, b, c, d]
+pub(super) enum InitialAlert {
+    UnknownKeyId,
+    HandshakeFailure,
+}
+
+impl InitialAlert {
+    pub(super) fn encode(self, checksum: [u8; 4]) -> [u8; 6] {
+        let (level, description) = match self {
+            Self::UnknownKeyId => (2, 52),
+            Self::HandshakeFailure => (3, 40),
+        };
+        let [a, b, c, d] = checksum;
+        [level, description, a, b, c, d]
+    }
 }
 
 pub(super) fn encode_alert(alert: Alert, checksum: [u8; 4]) -> [u8; 6] {

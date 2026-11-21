@@ -1,8 +1,8 @@
 # WAP-199 receive of batched application records
 
-**WTLS-220 · Proposed for G4 review.** The first support profile should
-receive batches of protected application records in both roles, including
-after the abbreviated client commit where it already accepts one record.
+**WTLS-220 · Verified at `ff294cb`.** The standalone UDP profile
+receives batches of protected application records in both roles,
+including after the abbreviated client commit.
 [WAP-199 evidence matrix](WAP_199_EVIDENCE_MATRIX.md#g4-multiple-application-records-per-sdu)
 
 ## WAP-199 requirements
@@ -25,21 +25,21 @@ specification. Each record's sequence selects its receive keys across
 key refreshes. Sections 10.3 and 10.4 govern abbreviated Finished
 verification and retries.
 [WAP-199 §§9.2.3.1, 10.3–10.4](https://www.openmobilealliance.org/tech/affiliates/wap/Technical_June2000-20021106%5B1%5D.zip) ·
-[Replay window](../src/handshake.rs#L855)
+[Replay window](../src/handshake.rs#L877)
 
 ## Receive behavior
 
-The wire layer already frames and authenticates each protected record.
-The handshake layer accepts exactly one application record in established
-traffic and up to one after an abbreviated client commit. Extend those
-receive paths and preserve the send API, record size limit, and UDP
-datagram budget. Outbound batching, application data on full-handshake
-final flights, and general content-type interleaving remain separate scope.
-[Open receive path](../src/handshake.rs#L787) ·
-[Abbreviated commit](../src/handshake.rs#L651) ·
+The wire layer frames and authenticates each protected record. The
+handshake layer admits a batch in established traffic and after an
+abbreviated client commit. The send API, record size limit, and UDP
+datagram budget are unchanged. Outbound batching, application data on
+full-handshake final flights, and general content-type interleaving
+remain separate scope.
+[Open receive path](../src/handshake.rs#L794) ·
+[Abbreviated commit](../src/handshake.rs#L658) ·
 [Datagram budget](../src/udp.rs#L216)
 
-| Received | Proposed result |
+| Received | Result |
 | --- | --- |
 | Established application batch | Frame and authenticate every record before committing application state. In datagram order, run each record through the existing replay window and deliver one block per accepted record. Skip duplicates and records outside the window individually. |
 | Malformed or unauthenticated record in an application batch | Reject the batch before any delivery, replay-window update, or close reference update. A valid retry remains deliverable. This all-or-nothing behavior is local receive policy. |
@@ -53,9 +53,9 @@ record. Keep the existing local choice of the highest accepted protected
 sequence under reordering. An older or duplicate tail cannot displace
 that reference. Rejected and all-duplicate batches leave it intact. The
 duplicate-Finished warning still references the verified Finished.
-[Close reference](../src/wire.rs#L499) ·
-[Prefix framing](../src/wire.rs#L711) ·
-[Terminal handling](../src/wire.rs#L865)
+[Close reference](../src/wire.rs#L511) ·
+[Prefix framing](../src/wire.rs#L727) ·
+[Terminal handling](../src/wire.rs#L882)
 
 ## Deterministic tests
 
@@ -75,12 +75,16 @@ record authentication covers the flag.
 | Abbreviated commit and retry | Withhold the standalone commit and establish using a valid prefixed batch. Reject an invalid suffix before commit or delivery, then retry with the valid batch. Separately verify that a failing Finished closes the pending connection without establishment or delivery. Repeat the exact accepted prefix with old and fresh application records. Check one establishment overall, the warning's Finished checksum, and delivery of only fresh records. Retain the cached omitted-length Finished boundary regression. |
 | Terminal alerts | Extend committed-epoch close, critical, and fatal tests with application records before the alert. Verify zero application delivery, the existing close acknowledgment, and cache preservation or invalidation according to the alert. Retain the G3 clear-alert regressions. |
 
-[Refresh harness](../tests/udp_adapter.rs#L253) ·
+[Refresh harness](../tests/udp_adapter.rs#L352) ·
 [Close checksum regression](../tests/wire_resumption.rs#L633) ·
 [Abbreviated receive harness](../tests/wire_resumption.rs#L306) ·
-[Alert regressions](../src/wire/alert_tests.rs#L656) ·
-[Budget regression](../tests/udp_adapter.rs#L1079)
+[Alert regressions](../src/wire/alert_tests.rs#L669) ·
+[Budget regression](../tests/udp_adapter.rs#L1178)
 
 Observed BlackBerry exchanges carry one application record per datagram.
-S-026 and C-026 remain partial pending implementation and deterministic
-receive evidence.
+The deterministic tests verify batched receive for S-026 and C-026 in
+the scoped UDP profile.
+[Explicit lengths](../tests/protected_echo.rs#L752) ·
+[Framing and resumed commits](../src/wire/application_batch_tests.rs#L51) ·
+[UDP replay and budget](../tests/udp_adapter.rs#L268) ·
+[Alert lifecycle](../src/wire/alert_tests.rs#L454)

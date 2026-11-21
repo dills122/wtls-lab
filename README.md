@@ -64,6 +64,13 @@ The flight and closure rules come from WAP-199 §§7, 9.2.3.1 and 10.1–10.5.9.
 
 ## Protected in-memory echo
 
+The wire peer accepts multiple protected application records in a UDP
+datagram, including after the verified abbreviated client commit. It
+delivers each replay-admitted record separately and in datagram order.
+The send API emits one application record per call, with the existing
+abbreviated commit prefix when required.
+[Receive behavior and tests](docs/WAP_199_APPLICATION_RECORD_BATCH_PLAN.md)
+
 The `wire::WirePeer` adapter drives the handshake state machines with actual WAP-199 record bytes. It selects **RSA / 3DES-CBC-EDE / SHA** (Appendix A values 8, 6, and 3), null compression, explicit sequencing, and a key refresh interval of at most eight records. The server selects the implemented algorithms from the client's lists and uses the smaller refresh value. The Finished calculation uses the original ClientHello bytes and the actual ServerHello selection. The client verifies a native WTLS RSA leaf against one provisioned RSA authority, the configured exact WTLS subject identity, and the supplied certificate-validation time. The full handshake transports a random RSA secret, derives both directional keys, and authenticates the encoded handshake transcript. Each ChangeCipherSpec switches its direction and resets the record sequence so the protected Finished starts at zero. Retries reuse the recorded wire bytes.
 
 Build with the OpenSSL development libraries and pkg-config. The lab server uses OpenSSL 3.2 or later with the default provider for RSA decryption. The `cargo test --offline` examples assume the locked dependencies are already in Cargo's cache. Run `cargo test --locked` to resolve the workspace on a fresh machine. [OpenSSL EVP decryption](https://docs.openssl.org/3.6/man3/EVP_PKEY_decrypt/)

@@ -335,9 +335,36 @@
     {
       "id": "WTLS-CL-PROTECTED-APPLICATION-RECORD-BATCH",
       "workItem": "WTLS-220",
-      "status": "open",
+      "status": "verified",
       "source": "WAP-199-WTLS-20000218-a §§9, 9.2.1, 9.2.3.1, 10.2–10.4, Appendix B.3, with WAP-199_103 rows S-026/C-026",
-      "statement": "The supported UDP profile accepts multiple independently protected application records per datagram in both roles, including an authenticated abbreviated client commit suffix. It preserves record boundaries, replay admission, close references, and terminal alert precedence."
+      "statement": "The supported UDP profile accepts multiple independently protected application records per datagram in both roles, including an authenticated abbreviated client commit suffix. It preserves record boundaries, replay admission, close references, and terminal alert precedence.",
+      "evidence": {
+        "verifiedCommit": "ff294cb9cdc6c8a2abb07188f3214e128761cd5d",
+        "claimId": "efcb6c1c92ab46e499f49a8c8291a4e6",
+        "localReceipt": "ruflo-wtls-loop/efcb6c1c92ab46e499f49a8c8291a4e6/receipt.json",
+        "design": "docs/WAP_199_APPLICATION_RECORD_BATCH_PLAN.md",
+        "tests": [
+          "src/wire/alert_tests.rs",
+          "src/wire/application_batch_tests.rs",
+          "tests/protected_echo.rs",
+          "tests/udp_adapter.rs"
+        ],
+        "scenarios": [
+          "wire::application_batch_tests::application_batch_rejects_late_framing_integrity_and_message_type_before_admission",
+          "wire::alert_tests::application_batch_cannot_follow_a_cached_lengthless_finished",
+          "wire::application_batch_tests::application_batch_close_checksum_uses_the_highest_admitted_record",
+          "wire::alert_tests::application_batch_failed_finished_closes_the_pending_epoch_and_preserves_the_cache",
+          "wire::application_batch_tests::application_batch_accepts_a_protected_final_omitted_length_in_both_directions",
+          "wire::alert_tests::application_batch_critical_alert_preserves_the_session_after_warnings_and_unverified_alerts",
+          "wire::application_batch_tests::application_batch_abbreviated_commit_and_exact_prefix_retry",
+          "wire::alert_tests::application_batch_prefixed_close_takes_priority_over_warning_and_data",
+          "wire::alert_tests::application_batch_fatal_alert_revokes_the_session_and_disengages_only_its_receiver",
+          "application_batch_delivers_distinct_records_in_both_directions",
+          "application_batch_replay_is_per_record_across_key_refresh_and_window_cutoff",
+          "application_batch_udp_budget_accepts_the_limit_and_rejects_one_byte_over"
+        ],
+        "scope": "Exact Ruflo review and 129 Rust tests. Both UDP roles receive independently protected application records in datagram order, including after an abbreviated client commit. Tests cover both length forms, replay and key refresh, invalid suffix rollback, the UDP budget, verified commit retries, and close checksum and cache effects. Outbound batching and general content-type interleaving remain separate scope. BlackBerry evidence covers single-record traffic."
+      }
     }
   ]
 }

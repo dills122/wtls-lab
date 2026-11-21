@@ -124,12 +124,14 @@ Outbound certificate error generation remains separate.
 
 ### G4. Multiple application records per SDU
 
-§9 describes concatenation into one SDU. §9.2.1 defines length framing
-and permits content-type interleaving. The established peer currently
-expects one application record, including after an abbreviated commit
-prefix. Decide whether the first profile will accept multiple protected
-application records per SDU or document the current limit as a profile
-restriction. The observed BlackBerry exchanges use the supported path. [Open receive path](../src/handshake.rs#L740) · [Abbreviated application tail](../src/handshake.rs#L797)
+**WTLS-220 · Proposed for review.** Sections 9 and 9.2.1 allow several
+records in one transport SDU. The established peer currently accepts one
+application record, including after an abbreviated commit prefix. The
+proposal extends those receive paths to batches in both roles. The
+observed BlackBerry exchanges use one application record per datagram.
+[Receive design and tests](WAP_199_APPLICATION_RECORD_BATCH_PLAN.md) ·
+[Open receive path](../src/handshake.rs#L787) ·
+[Abbreviated application tail](../src/handshake.rs#L844)
 
 ### G5. GMT time on the wire
 
@@ -152,4 +154,4 @@ traffic, abbreviated resumption, expiry, and established-connection
 routing. [Reviewed design](WAP_199_PENDING_CLIENT_HELLO_PLAN.md) ·
 [Adapter tests](../tests/udp_adapter.rs#L412) · [Evidence ledger](WTLS_EVIDENCE.json)
 
-G4 needs an explicit scope decision.
+G4's proposed receive scope is awaiting review.

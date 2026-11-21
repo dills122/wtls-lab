@@ -27,7 +27,7 @@ was the 129-test WTLS-220 Cargo run.
 | Service and record surface | The current API exposes datagram, delivery, establishment, close, timeout, and diagnostic events. The WAP service primitive contract, including the §10.4 `SEC-Create.ind` behavior, needs separate design if claimed. G4 covers receive-side application batches and the verified abbreviated prefix. General mixed records, application records on full final flights, and outbound coalescing remain outside its evidence. |
 | Broader conformance and peer options | Full Appendix E conformance would require a qualifying anonymous option per role and verification beyond the selected profile. Concurrent same-session connections are optional under row 004. WAP-261, more suites, additional certificate formats, client authentication, and WIM remain deferred. |
 
-[Certificate rejection path](../src/wire.rs#L480) ·
+[Certificate rejection path](../src/wire.rs#L595) ·
 [TRUST-05](../tests/provisioned_trust.rs#L451) ·
 [Server selection](../src/wire/codec.rs#L151) ·
 [Established tuple policy](WAP_199_PENDING_CLIENT_HELLO_PLAN.md#adapter-behavior) ·
@@ -64,7 +64,7 @@ available in the same receive outcome. The UDP adapter currently turns
 an error into a diagnostic and emits datagrams from successful wire actions.
 [WAP-199 §§10.2–10.2.2](https://ptacts.uspto.gov/ptacts/public-informations/petitions/1549804/download-documents?artifactId=q91LjyqB9tLZ-LVakpTsgAE_GyThWnjP3JSk0xnVhQkx_FB33j7C-1I#page=44) ·
 [Wire action surface](../src/wire.rs#L163) ·
-[UDP event dispatch](../src/udp.rs#L356)
+[UDP event dispatch](../src/udp.rs#L504)
 
 ### Acceptance for a proposed implementation
 
@@ -95,6 +95,7 @@ WTLS-222 verified the server alert for well-formed offers with no
 selectable full-handshake algorithms at `036ce51`.
 [Algorithm mismatch alert design](WAP_199_ALGORITHM_MISMATCH_ALERT_PLAN.md)
 
-WTLS-223 proposes staging a full handshake alongside the incumbent
-on the same UDP address and port until the replacement verifies Finished.
+WTLS-223 verified full-handshake recovery on the same address and port
+at `4796ed6`. The incumbent stays active until the new peer verifies
+Finished. Staged abbreviated recovery remains separate.
 [Established tuple recovery design](WAP_199_ESTABLISHED_TUPLE_RECOVERY_PLAN.md)

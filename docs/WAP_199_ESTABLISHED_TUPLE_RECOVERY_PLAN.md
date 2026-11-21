@@ -1,14 +1,14 @@
 # WAP-199 recovery on an established UDP tuple
 
-**WTLS-223 · Proposed after read-only Ruflo review.** Baseline `6d29c7b`. Stage a fresh
-authenticated-profile handshake on an occupied inbound server tuple so
-the current connection can keep carrying protected traffic. Promote the
-new peer only after the server verifies the client Finished. A UDP tuple
-here is the remote address and port as seen by one adapter.
+**WTLS-223 · Verified at `4796ed6`.** The gateway stages a fresh full
+handshake on an occupied inbound tuple while the incumbent carries
+protected traffic. Promotion requires verified client Finished and a
+final server flight within budget. A UDP tuple here is the remote
+address and port as seen by one adapter.
 [Support promise review](WAP_199_SUPPORT_PROMISE_REVIEW.md) ·
-[Current UDP routing](../src/udp.rs#L218)
+[Current UDP routing](../src/udp.rs#L234)
 
-## Protocol and proposed first slice
+## Protocol and verified scope
 
 WAP-199 §10.4 specifies byte-identical flight retransmission for
 duplicates and starting a handshake for a fresh ClientHello. Appendix
@@ -64,7 +64,7 @@ existing verified-prefix boundary check for A, and leave its complete
 suffix on A's authentication and replay path. A pending candidate must
 pass its own commit checks before it can publish any establishment or
 delivery.
-[Wire flight matching](../src/wire.rs#L400) ·
+[Wire flight matching](../src/wire.rs#L519) ·
 [Server commit handling](../src/handshake.rs#L621) ·
 [G3 alert policy](WAP_199_CLEAR_ALERT_PLAN.md#profile-behavior)
 
@@ -99,8 +99,8 @@ ends independently, preserve its normal close, timeout and cache
 effects. Cancel the staged attempt and allow a later fresh hello
 through ordinary admission. Record retired hello randoms under the
 existing bounded policy. These are local ownership rules.
-[Adapter scheduling](../src/udp.rs#L144) ·
-[Existing association retirement](../src/udp.rs#L320) ·
+[Adapter scheduling](../src/udp.rs#L153) ·
+[Existing association retirement](../src/udp.rs#L466) ·
 [Cache policy](WIRE_SESSION_RESUMPTION.md#cache-policy)
 
 At the public API, writes address the current association by tuple.
@@ -108,10 +108,10 @@ Once B is established, delayed application work submitted for that
 tuple uses B. Consumers reset tuple-bound state on `Established`. The
 lab responder already resets its application session there. Carrying
 application work across a handover needs an association-aware API.
-[Tuple-based send](../src/udp.rs#L308) ·
+[Tuple-based send](../src/udp.rs#L454) ·
 [Application reset](../src/bin/wtls-udp-lab.rs#L172)
 
-## Deterministic tests to review
+## Deterministic tests
 
 Use two local client state machines, a fixed UDP tuple and explicit
 wall and monotonic clocks. Keep A's state in the harness to check
@@ -126,11 +126,13 @@ while rejecting B's larger full certificate flight.
 | Authenticate and promote B | Verify that B's Finished is the transition point. Check one new establishment and protected traffic under B. Deliver genuine delayed A data after promotion and observe no old application delivery. |
 | Lose B's final server flight | Drop the normal final reply after the server has promoted B. Let B retry the identical client commit, compare the repeated server flight byte for byte, and complete a protected exchange. |
 | Failed or expired B | Use an initial refusal, first-flight budget rejection, a failed candidate verification and an ordinary WTLS-221 certificate rejection. Verify continued A traffic and cache eligibility. Check expiry through both `tick` and inbound routing at the exact deadline, including a B commit at that deadline. Observe no tuple-wide close or timeout. |
+| Incomplete input during staging | Verify A remains usable and B retains its deadline and cached flight. |
 | Candidate capacity and replay | Exercise B retry, same-random conflict and a fresh eligible C while B is staged. Verify B keeps its flight and deadline. Once B retires, stage a fresh offer and check that delayed traffic from B cannot complete it. |
 | Existing abbreviated A | Stage a full B while A is open on the server and its client still uses the G4 abbreviated commit prefix. Verify that A's valid prefixed application data reaches A's path and B stays pending. |
 | Independent close of A | Process an authenticated A close before B's commit and verify ordinary Connection or Session close and cache effects, B cancellation, and admission of a later fresh client. In a separate order, promote B first and verify delayed A closure leaves B open. |
 
-Use the existing G3, G4, G6, terminal retirement, sequence exhaustion
-and full-Finished retransmission tests as regression controls.
-[UDP adapter tests](../tests/udp_adapter.rs) ·
+All 154 Rust tests, Clippy, formatting, and the exact-commit
+Ruflo review passed. The regression gate retains G3, G4, G6, terminal
+retirement, sequence exhaustion, and final-flight retry controls.
+[Established recovery tests](../tests/udp_adapter.rs#L1458) ·
 [Supervised verification](SUPERVISED_WORKFLOW.md#run-the-wtls-loop)

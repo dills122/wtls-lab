@@ -1,7 +1,7 @@
 # WAP-199 client and server evidence matrix
 
 **Evidence baseline.** Live evidence through WTLS-213. Deterministic updates
-for WTLS-215 at `b7d5baf`, WTLS-216 at `e166de4`, WTLS-217 at `85c601b`, WTLS-218 at `d12211e`, WTLS-219 at `0d49c5a`, WTLS-220 at `ff294cb`, WTLS-221 at `32f112a`, and WTLS-222 at `036ce51`.
+for WTLS-215 at `b7d5baf`, WTLS-216 at `e166de4`, WTLS-217 at `85c601b`, WTLS-218 at `d12211e`, WTLS-219 at `0d49c5a`, WTLS-220 at `ff294cb`, WTLS-221 at `32f112a`, WTLS-222 at `036ce51`, and WTLS-223 at `4796ed6`.
 The [support promise](WAP_199_PROVISIONED_TRUST_PLAN.md#support-boundary) covers
 one server-authenticated UDP profile. It uses unrestricted RSA, a native
 WTLS leaf and one provisioned RSA authority, 3DES-CBC-EDE, full HMAC-SHA-1,
@@ -28,17 +28,17 @@ add live evidence for the Rust server with the stock BlackBerry 7290 as its
 client. BlackBerry's CA enrollment, prompt setting, and persistence are
 observations about that simulator. The [WTLS-213 capture](../fixtures/HISTORICAL_PEERS.md#blackberry-provisioned-trust-reconnect-lifecycle)
 and [work item ledger](WTLS_EVIDENCE.json) retain the peer and run provenance.
-WTLS-222 passed all 145 tests in `cargo test --locked --offline`.
+WTLS-223 passed all 154 tests in `cargo test --locked --offline`.
 
 | Server row | Client row | Requirement | Disposition and evidence |
 | --- | --- | --- | --- |
 | S-001 M | C-001 M | Full handshake (§10.3) | **Verified, both.** Matching provisioned authority, certificate flight, client key exchange, both Finished exchanges, and protected echo. WTLS-213 verifies the server twice with an independent peer. [TRUST-02](../tests/provisioned_trust.rs#L284) |
 | S-002 M | C-002 M | Abbreviated handshake (§10.3) | **Verified, both.** Same-ID abbreviated flight and fresh hello randoms and traffic keys. Cache miss falls back with a usable full offer. WTLS-213 shows the server resumes after Connection close and takes the full path after Session close when the peer reoffers the same ID. [Client random and fresh keys](../tests/wire_resumption.rs#L228) · [Server random](../tests/protected_echo.rs#L444) · [TRUST-06](../tests/provisioned_trust.rs#L532) |
 | S-005 M | C-005 M | Concatenated handshake records in one SDU (§10.4) | **Verified, both.** Distinct records carry each handshake message. Both full commit directions and the server-first abbreviated flight are exercised. The codec checks explicit and final omitted lengths. [Full wire exchange](../tests/protected_echo.rs#L259) · [Abbreviated wire exchange](../tests/protected_echo.rs#L389) · [Record codec](../tests/record_codec.rs#L36) |
-| S-006 M | C-006 M | Handshake reliability over datagrams (§10.4) | **Verified for the scoped client and server UDP paths.** The deterministic UDP tests cover a lost ServerHello flight and a lost final full-handshake CCS/Finished flight. Wire tests cover abbreviated commit recovery. The server replaces a pending handshake for a fresh admissible hello and repeats cached flights for exact duplicates. [G6](#g6-fresh-clienthello-during-a-pending-handshake) [ServerHello loss](../tests/udp_adapter.rs#L899) · [Final flight loss](../tests/udp_adapter.rs#L949) · [Abbreviated commit recovery](../tests/wire_resumption.rs#L306) |
-| S-010 M | C-010 M | Explicit sequence numbers (§9.2.3.1) | **Verified, both.** Explicit fields and CCS reset are exercised. The codec rejects a missing UDP sequence field. WTLS-215 verifies the last valid number, retirement before wrap, and reuse of the eligible cached session. [G1](#g1-sequence-exhaustion) [Codec rejection](../tests/record_codec.rs#L99) · [Wire echo](../tests/protected_echo.rs#L752) · [UDP sequence assertions](../tests/udp_adapter.rs#L230) |
-| S-012 M | C-012 M | Duplicate removal (§9.2.3.1) | **Verified for protected application records, both.** UDP tests accept in-window reordered records across refresh and suppress repeated delivery in each direction. The typed server test also drops an older record outside the window. [UDP replay test](../tests/udp_adapter.rs#L352) · [Typed window test](../tests/handshake.rs#L371) |
-| S-013 M | C-013 M | Key refresh (Appendix B.3) | **Verified, both.** Independent ciphertext expectations cover the refresh boundary. UDP tests cross it in both directions with loss or reordering. [Wire vectors](../tests/protected_echo.rs#L259) · [UDP refresh tests](../tests/udp_adapter.rs#L352) |
+| S-006 M | C-006 M | Handshake reliability over datagrams (§10.4) | **Verified for the scoped client and server UDP paths.** The deterministic UDP tests cover a lost ServerHello flight and a lost final full-handshake CCS/Finished flight. Wire tests cover abbreviated commit recovery. The server replaces a pending handshake for a fresh admissible hello and repeats cached flights for exact duplicates. [G6](#g6-fresh-clienthello-during-a-pending-handshake) [ServerHello loss](../tests/udp_adapter.rs#L911) · [Final flight loss](../tests/udp_adapter.rs#L961) · [Abbreviated commit recovery](../tests/wire_resumption.rs#L306) |
+| S-010 M | C-010 M | Explicit sequence numbers (§9.2.3.1) | **Verified, both.** Explicit fields and CCS reset are exercised. The codec rejects a missing UDP sequence field. WTLS-215 verifies the last valid number, retirement before wrap, and reuse of the eligible cached session. [G1](#g1-sequence-exhaustion) [Codec rejection](../tests/record_codec.rs#L99) · [Wire echo](../tests/protected_echo.rs#L752) · [UDP sequence assertions](../tests/udp_adapter.rs#L238) |
+| S-012 M | C-012 M | Duplicate removal (§9.2.3.1) | **Verified for protected application records, both.** UDP tests accept in-window reordered records across refresh and suppress repeated delivery in each direction. The typed server test also drops an older record outside the window. [UDP replay test](../tests/udp_adapter.rs#L360) · [Typed window test](../tests/handshake.rs#L371) |
+| S-013 M | C-013 M | Key refresh (Appendix B.3) | **Verified, both.** Independent ciphertext expectations cover the refresh boundary. UDP tests cross it in both directions with loss or reordering. [Wire vectors](../tests/protected_echo.rs#L259) · [UDP refresh tests](../tests/udp_adapter.rs#L360) |
 | S-020 M | C-020 M | Critical alerts (§10.2) | **Verified for the scoped receive behavior, both roles.** Matched clear critical errors end pending negotiations with cache retention. Generic protected critical receive is covered for both roles. [G3](#g3-alert-scope) |
 | S-021 M | C-021 M | Fatal alerts (§10.2) | **Verified for the scoped receive behavior, both roles.** Matched clear fatal errors end pending negotiations with cache retention. Protected fatal and Session close still invalidate the applicable entry. [G3](#g3-alert-scope) |
 | S-022 M | C-022 M | Alert checksums (§10.2) | **Verified for the scoped receive behavior, both roles.** Clear and protected alerts correlate against complete emitted records. The zero exception is unused. The pending no_connection sequence exception still requires checksum validation. [G3](#g3-alert-scope) |
@@ -113,7 +113,7 @@ protected Finished datagram in a full handshake. At the retry deadline
 the client resends its entire commit byte for byte. The open server repeats
 its original final flight and emits no second establishment event. The
 client opens and exchanges a protected echo on the recovered connection.
-[Deterministic UDP test](../tests/udp_adapter.rs#L949) · [Evidence ledger](WTLS_EVIDENCE.json)
+[Deterministic UDP test](../tests/udp_adapter.rs#L961) · [Evidence ledger](WTLS_EVIDENCE.json)
 
 ### G3. Alert scope
 
@@ -145,7 +145,7 @@ exercise single-record traffic. Outbound batching and general
 content-type interleaving remain outside this profile.
 [Receive design and tests](WAP_199_APPLICATION_RECORD_BATCH_PLAN.md) ·
 [Wire batch tests](../src/wire/application_batch_tests.rs#L51) ·
-[UDP replay and budget](../tests/udp_adapter.rs#L268) ·
+[UDP replay and budget](../tests/udp_adapter.rs#L276) ·
 [Alert lifecycle](../src/wire/alert_tests.rs#L459) ·
 [Evidence ledger](WTLS_EVIDENCE.json)
 
@@ -158,7 +158,7 @@ handshakes. The abbreviated handshake echoes the cached session ID and
 uses a new wall-clock value for each role. The monotonic millisecond values
 are independent of the wall-clock inputs. The corrected status is mandatory
 for the server and optional for the client.
-[Full hello timestamp test](../tests/udp_adapter.rs#L153) · [Resumed hello timestamp test](../tests/udp_adapter.rs#L163) · [Evidence ledger](WTLS_EVIDENCE.json)
+[Full hello timestamp test](../tests/udp_adapter.rs#L161) · [Resumed hello timestamp test](../tests/udp_adapter.rs#L171) · [Evidence ledger](WTLS_EVIDENCE.json)
 
 ### G6. Fresh ClientHello during a pending handshake
 
@@ -168,4 +168,17 @@ retry of the current hello returns its cached flight byte for byte. The
 deterministic tests cover replacement, rejection, delayed previous
 traffic, abbreviated resumption, expiry, and established-connection
 routing. [Reviewed design](WAP_199_PENDING_CLIENT_HELLO_PLAN.md) ·
-[Adapter tests](../tests/udp_adapter.rs#L511) · [Evidence ledger](WTLS_EVIDENCE.json)
+[Adapter tests](../tests/udp_adapter.rs#L519) · [Evidence ledger](WTLS_EVIDENCE.json)
+
+## Established UDP tuple recovery
+
+**Verified in WTLS-223.** An eligible fresh full ClientHello can start
+one staged handshake on the incumbent's UDP address and port. The
+incumbent retains protected traffic until the candidate completes
+Finished verification and the final server flight fits the budget.
+Candidate rejection or expiry preserves the incumbent. The promoted
+peer can resend its exact final flight, and close ordering preserves
+the authority of the connection that owns each record.
+[Recovery design](WAP_199_ESTABLISHED_TUPLE_RECOVERY_PLAN.md) ·
+[Established recovery tests](../tests/udp_adapter.rs#L1458) ·
+[Evidence ledger](WTLS_EVIDENCE.json)

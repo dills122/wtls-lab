@@ -434,9 +434,30 @@
     {
       "id": "WTLS-CL-ESTABLISHED-UDP-TUPLE-RECOVERY",
       "workItem": "WTLS-223",
-      "status": "open",
+      "status": "verified",
       "source": "WAP-199-WTLS-20000218-a §§9.1, 9.2.3.1, 10.1–10.4 and Appendix B.4",
-      "statement": "On an established inbound UDP tuple, an eligible fresh full ClientHello can stage one bounded replacement while the incumbent remains active. The gateway switches only after the candidate validates Finished and can send the final flight. Candidate rejection or expiry does not retire the incumbent."
+      "statement": "On an established inbound UDP tuple, an eligible fresh full ClientHello can stage one bounded replacement while the incumbent remains active. The gateway switches only after the candidate validates Finished and can send the final flight. Candidate rejection or expiry does not retire the incumbent.",
+      "evidence": {
+        "verifiedCommit": "4796ed6aba585317a55b07939daf4f6ff330995d",
+        "claimId": "4a0ba65af6d84853a74fd68833ca2dcc",
+        "localReceipt": "ruflo-wtls-loop/4a0ba65af6d84853a74fd68833ca2dcc/receipt.json",
+        "design": "docs/WAP_199_ESTABLISHED_TUPLE_RECOVERY_PLAN.md",
+        "tests": [
+          "tests/udp_adapter.rs"
+        ],
+        "scenarios": [
+          "established_recovery_expires_at_the_deadline_in_tick_and_receive",
+          "established_recovery_first_flight_budget_refusal_leaves_no_candidate",
+          "established_recovery_incumbent_close_cancels_staged_commit_and_honors_scope",
+          "established_recovery_initial_alert_and_clear_certificate_rejection_preserve_incumbent",
+          "established_recovery_keeps_both_peers_on_incomplete_commit_input",
+          "established_recovery_keeps_verified_abbreviated_prefix_with_incumbent",
+          "established_recovery_promotes_and_replays_lost_final_before_delayed_incumbent_close",
+          "established_recovery_retires_failed_finished_and_preserves_incumbent",
+          "established_recovery_stages_at_capacity_and_keeps_incumbent_traffic"
+        ],
+        "scope": "Exact Ruflo review and 154 Rust tests. The incumbent serves protected traffic while a fresh full handshake is staged on the same UDP tuple. Successful Finished verification and a budget-valid final flight promote the candidate. Its flight history recovers loss exactly. Candidate rejection or expiry preserves the incumbent, and close ordering retains existing cache effects."
+      }
     }
   ]
 }

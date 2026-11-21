@@ -150,10 +150,16 @@ The adapter enforces a datagram budget and an association capacity. A pending
 inbound slot has a configurable fixed deadline. An admissible fresh
 ClientHello can start a new handshake in that slot while it is pending.
 Exact duplicates receive the cached flight. Both paths keep the slot's
-original deadline. An open association retains its slot until closed. A shared
-authenticated server context lets a fresh ClientHello resume after Connection
-close, and permits a full reconnect after Session close. The adapter keeps
-a bounded history of retired ClientHello randoms keyed by remote address.
+original deadline. On an open inbound tuple, a fresh full ClientHello
+with an empty session ID can stage one replacement in the same slot.
+Protected traffic stays on the incumbent until the new peer verifies
+Finished and can send its final flight within the datagram budget. An
+`Established` event marks the switch for tuple-addressed operations.
+A shared authenticated server context lets a fresh ClientHello resume
+after Connection close and permits a full reconnect after Session close.
+The adapter keeps a bounded history of retired ClientHello randoms keyed
+by remote address.
+[Established tuple recovery](docs/WAP_199_ESTABLISHED_TUPLE_RECOVERY_PLAN.md)
 
 ```sh
 cargo run --locked --offline --bin wtls-udp-lab

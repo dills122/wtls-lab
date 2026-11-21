@@ -1,6 +1,6 @@
 # WAP-199 pending server ClientHello replacement
 
-**WTLS-218 · Ruflo-reviewed design.** This slice covers G6 for an inbound
+**WTLS-218 · Verified at `d12211e`.** This slice covers G6 for an inbound
 server handshake that has started and has yet to authenticate Finished.
 [WAP-199 evidence matrix](WAP_199_EVIDENCE_MATRIX.md#g6-fresh-clienthello-during-a-pending-handshake)
 
@@ -11,7 +11,7 @@ duplicate ClientHello and start a handshake for a new ClientHello. The
 same distinction applies to abbreviated handshakes. The specification also
 calls for a `SEC-Create.ind` service primitive. The standalone adapter
 exposes a new initial flight and negotiating state through its existing
-interface. This slice will verify the fresh handshake transition at that
+interface. The deterministic tests verify the fresh handshake transition at that
 boundary. `Established` reports the later commit. WAP service-level
 conformance would also require a creation indication with the §6.3.2.1
 parameters before the initial flight.
@@ -23,9 +23,9 @@ matches a previously accepted datagram and returns its stored response. A
 different opening hello cannot start on the existing peer, since normal
 ClientHello admission expects an idle server. The UDP adapter can make the
 replacement decision while the wire peer continues to own negotiation.
-[UDP routing](../src/udp.rs#L216) · [Opening validation](../src/udp.rs#L355) · [Wire retry path](../src/wire.rs#L326)
+[UDP routing](../src/udp.rs#L216) · [Opening validation](../src/udp.rs#L380) · [Wire retry path](../src/wire.rs#L326)
 
-## Proposed behavior
+## Adapter behavior
 
 Apply replacement only while the tuple holds an inbound server peer with
 a pending deadline and negotiating status. Use the parsed random for
@@ -48,7 +48,7 @@ gets only the remaining time. A new admission after expiry gets its own
 lifetime through the existing path. This is local admission
 policy. It avoids extending a slot's lifetime through successive hellos.
 Appendix B.4 informs the separate treatment of established connections.
-Established connection replacement belongs to a separate negotiation design. [Expiry and retirement](../src/udp.rs#L265) · [WAP-199 Appendix B.4](https://www.openmobilealliance.org/tech/affiliates/wap/Technical_June2000-20021106%5B1%5D.zip)
+Established connection replacement belongs to a separate negotiation design. [Expiry and retirement](../src/udp.rs#L286) · [WAP-199 Appendix B.4](https://www.openmobilealliance.org/tech/affiliates/wap/Technical_June2000-20021106%5B1%5D.zip)
 
 A replacement starts a new transcript from its own ClientHello. Its first
 flight and Finished belong to that attempt. An older in-flight commit must
@@ -60,13 +60,12 @@ insertion. Existing verified session entries remain eligible on their
 original terms, including the abbreviated commit-time recheck.
 [Selection and cache insertion](../src/wire.rs#L558) · [Cache policy](WIRE_SESSION_RESUMPTION.md#cache-policy)
 
-## Deterministic test plan
+## Deterministic tests
 
 Use the existing in-memory UDP adapter link, fixed clocks, and ordinary
 locally generated client flights. Use distinct supplied wall-clock values
 for A and B so that different hello randoms can be asserted independently of
-random key material. The initial test should fail at B admission on the
-current code, before production changes.
+random key material. The first test reproduced the missing fresh B admission before the fix.
 
 | Case | What to prove |
 | --- | --- |
@@ -78,4 +77,4 @@ current code, before production changes.
 | Established tuple guard | Send an ordinary fresh hello on the completed tuple. Verify the established peer can still exchange protected data. |
 
 Keep existing retry, timeout, cache, and WinWAP checks in the regression gate.
-[Existing initial-flight loss test](../tests/udp_adapter.rs#L334) · [Existing timeout test](../tests/udp_adapter.rs#L642)
+[Existing initial-flight loss test](../tests/udp_adapter.rs#L634) · [Existing timeout test](../tests/udp_adapter.rs#L941)

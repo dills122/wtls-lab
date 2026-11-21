@@ -90,3 +90,7 @@ WTLS-221 implemented and verified this slice. The scoped wire and UDP
 evidence is recorded at `32f112a`.
 [Certificate alert design](WAP_199_CERTIFICATE_ALERT_PLAN.md) ·
 [Supervised verification](SUPERVISED_WORKFLOW.md#run-the-wtls-loop)
+
+WTLS-222 is proposed for well-formed offers with no selectable
+full-handshake algorithms.
+[Algorithm mismatch alert design](WAP_199_ALGORITHM_MISMATCH_ALERT_PLAN.md)

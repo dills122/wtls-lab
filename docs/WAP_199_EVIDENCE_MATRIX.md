@@ -151,9 +151,9 @@ flight, from a new ClientHello, which starts a handshake and signals its
 creation. On the same remote tuple, the UDP adapter forwards a fresh
 ClientHello to the pending peer. That wire peer accepts a new ClientHello
 only in `Idle`. Review replacement of a pending association and verify
-that the duplicate path still returns the original flight. Handling
-handshakes initiated on an established connection is a separate question.
-[UDP routing](../src/udp.rs#L223) · [Wire receive state](../src/wire.rs#L733)
+that the duplicate path still returns the original flight. The Ruflo-reviewed plan covers
+pending admission, duplicate replay, timeouts, and cache isolation.
+[WTLS-218 review plan](WAP_199_PENDING_CLIENT_HELLO_PLAN.md) · [UDP routing](../src/udp.rs#L216)
 
 G3 and G4 need an explicit scope decision. G6 is a
 separate server-side lifecycle gap.

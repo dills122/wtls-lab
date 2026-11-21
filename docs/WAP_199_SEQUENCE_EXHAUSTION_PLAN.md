@@ -1,9 +1,8 @@
 # WAP-199 sequence exhaustion plan
 
-**WTLS-215 · Ruflo-reviewed design.** This plan covers both roles in the
-provisioned authenticated UDP profile. G1 remains partial until the
-implementation and boundary tests land.
-[WAP-199 evidence matrix](WAP_199_EVIDENCE_MATRIX.md#g1-sequence-exhaustion)
+**WTLS-215 · Verified at `b7d5baf`.** Both provisioned UDP
+roles passed the deterministic boundary suite and exact Ruflo review.
+[WAP-199 evidence matrix](WAP_199_EVIDENCE_MATRIX.md#g1-sequence-exhaustion) · [Evidence ledger](WTLS_EVIDENCE.json)
 
 ## Decision
 
@@ -34,17 +33,13 @@ An ordinary Connection close or a validated critical alert preserves
 eligibility. Clear or provisional alerts have no cache revocation authority
 under the existing authenticated profile.
 
-The wire record counter is authoritative for fresh output across
-application records and alerts. The current application guard can report
-`SequenceExhausted` while the peer remains open. The wire encoder has a
-separate capacity check that goes through the abort and release path.
-Converge on consistent retirement when either path detects exhaustion.
-Report `WireError::Handshake(HandshakeError::SequenceExhausted)` and keep
-the adapter's existing protocol diagnostic. The retired peer releases
-connection-local traffic, replay, retry, flight, and checksum state. The
-UDP adapter removes the peer when it reports `Closed`. [Application guard](../src/handshake.rs#L707) ·
-[Wire sequence counter](../src/wire.rs#L139) · [Wire apply and release](../src/wire.rs#L945) ·
-[Adapter retirement](../src/udp.rs#L292)
+The wire record counter governs fresh output across application records
+and alerts. Both the application guard and wire encoder report
+`WireError::Handshake(HandshakeError::SequenceExhausted)` at the limit.
+The wire peer closes and releases connection-local state. The UDP adapter
+reports its existing protocol diagnostic and removes the peer when it
+reports `Closed`. [Wire implementation](../src/wire.rs) ·
+[Adapter retirement](../src/udp.rs)
 
 A byte-identical cached retransmission uses its original sequences and
 requires no new number while the association is open. A cached resumed

@@ -228,9 +228,26 @@
     {
       "id": "WTLS-CL-SEQUENCE-EXHAUSTION",
       "workItem": "WTLS-215",
-      "status": "open",
+      "status": "verified",
       "source": "WAP-199-WTLS-20000218-a §§9.2.3.1, 10.1, 10.2–10.2.2 and 11.1.4, with WAP-199_103 rows S-010/C-010",
-      "statement": "In the provisioned authenticated UDP profile, either endpoint can send sequence 65535 once for a new record. Attempting another new record retires the connection with a typed sequence-exhaustion diagnostic and preserves the eligible session at its original expiry. A distinct verified fatal or explicit/session close still invalidates as applicable."
+      "statement": "In the provisioned authenticated UDP profile, either endpoint can send sequence 65535 once for a new record. Attempting another new record retires the connection with a typed sequence-exhaustion diagnostic and preserves the eligible session at its original expiry. A distinct verified fatal or explicit/session close still invalidates as applicable.",
+      "evidence": {
+        "verifiedCommit": "b7d5baf6d260012827d63f86af06cadcabdb93fb",
+        "claimId": "9baa8d6d4bbf43bb834601fe138cbf39",
+        "localReceipt": "ruflo-wtls-loop/9baa8d6d4bbf43bb834601fe138cbf39/receipt.json",
+        "design": "docs/WAP_199_SEQUENCE_EXHAUSTION_PLAN.md",
+        "scenarios": [
+          "wire::sequence_tests::sequence_exhaustion_cached_commit_retransmits_but_fresh_suffix_is_atomic",
+          "wire::sequence_tests::sequence_exhaustion_authenticated_session_close_invalidates_even_without_ack",
+          "wire::sequence_tests::sequence_exhaustion_fresh_acknowledgment_uses_the_same_counter_as_application",
+          "udp::sequence_tests::sequence_exhaustion_reports_protocol_and_reuses_the_retired_slot_for_both_roles",
+          "wire::sequence_tests::sequence_exhaustion_last_application_preserves_exact_session_for_both_roles",
+          "wire::sequence_tests::sequence_exhaustion_session_close_invalidates_locally_even_without_output",
+          "sequence_exhaustion_counts_a_fresh_alert_in_the_typed_handshake",
+          "sequence_exhaustion_in_the_typed_handshake_closes_and_honors_session_scope"
+        ],
+        "scope": "Exact Ruflo review and 107 Rust tests. Both provisioned wire roles exercise the last record, automatic retirement, and resumption with the preserved session. Coverage includes alert output, explicit invalidation, and UDP retirement."
+      }
     }
   ]
 }

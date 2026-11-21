@@ -747,3 +747,26 @@ fn matching_clear_alert_fatal_ends_pending_client_negotiation() {
     assert_eq!(client.deadline(), None);
     assert!(client.tick(10).unwrap().is_empty());
 }
+
+#[test]
+fn application_batch_delivers_distinct_records_in_both_directions() {
+    let (mut client, mut server) = peers(SUBJECT);
+    establish(&mut client, &mut server);
+
+    for client_sends in [true, false] {
+        let (sender, receiver) = if client_sends {
+            (&mut client, &mut server)
+        } else {
+            (&mut server, &mut client)
+        };
+        let first = send(&sender.send_application(b"first".to_vec()).unwrap());
+        let second = send(&sender.send_application(b"second".to_vec()).unwrap());
+        assert_eq!(
+            receiver.receive(&[first, second].concat(), 15).unwrap(),
+            [
+                WireAction::Deliver(b"first".to_vec()),
+                WireAction::Deliver(b"second".to_vec()),
+            ]
+        );
+    }
+}

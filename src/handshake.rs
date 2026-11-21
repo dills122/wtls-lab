@@ -343,15 +343,19 @@ impl Handshake {
         now_ms: u64,
         finished: &impl FinishedProvider,
     ) -> Result<Vec<Action>, HandshakeError> {
-        self.with_alert_sequence(|handshake| handshake.receive_actions(datagram, now_ms, finished))
+        self.with_alert_sequence(|handshake| {
+            handshake.receive_actions(datagram, now_ms, finished, |_, _| {})
+        })
     }
 
     // WirePeer allocates sequences for every encoded record, including alerts.
+    // Report admitted application records by index within the application batch.
     pub(crate) fn receive_actions(
         &mut self,
         datagram: &[Message],
         now_ms: u64,
         finished: &impl FinishedProvider,
+        mut application_admitted: impl FnMut(usize, u16),
     ) -> Result<Vec<Action>, HandshakeError> {
         let result = match (&self.config, &mut self.state) {
             (
@@ -377,12 +381,14 @@ impl Handshake {
                 State::ClientHello(hello),
             ) => client_hello_response(hello, datagram, now_ms, *retry, key_exchange, finished),
             (_, State::ClientCommit(commit)) => client_commit(commit, datagram, finished),
-            (_, State::ServerCommit(commit)) => server_commit(commit, datagram, finished),
+            (_, State::ServerCommit(commit)) => {
+                server_commit(commit, datagram, finished, &mut application_admitted)
+            }
             (_, State::Open(open)) => {
                 if let Some(scope) = open.received_close(datagram) {
                     return self.close_actions(scope);
                 }
-                return open.receive(datagram);
+                return open.receive(datagram, &mut application_admitted);
             }
             (_, State::Closed) => return Ok(Vec::new()),
             _ => return Err(HandshakeError::UnexpectedDatagram),
@@ -616,6 +622,7 @@ fn server_commit(
     commit: &ServerCommit,
     incoming: &[Message],
     finished: &impl FinishedProvider,
+    application_admitted: &mut impl FnMut(usize, u16),
 ) -> Transition {
     if incoming == commit.hello.incoming {
         return Ok((None, vec![Action::Send(commit.hello.outgoing.clone())]));
@@ -661,13 +668,13 @@ fn server_commit(
                 peer_commit: vec![ccs.clone(), peer_finished.clone()],
             });
             let data = if open.received_close(incoming).is_some() {
-                None
+                Vec::new()
             } else {
-                application_tail(rest)?
+                application_batch(rest)?
             };
             verify_finished(finished, Role::Client, &commit.transcript, proof)?;
             let mut actions = vec![established(HandshakeKind::Resumed, commit.session)];
-            open.deliver(data, &mut actions);
+            open.deliver(data, &mut actions, application_admitted);
             Ok((Some(State::Open(open)), actions))
         }
         _ => Err(HandshakeError::UnexpectedDatagram),
@@ -784,7 +791,11 @@ impl Open {
         }
     }
 
-    fn receive(&mut self, incoming: &[Message]) -> Result<Vec<Action>, HandshakeError> {
+    fn receive(
+        &mut self,
+        incoming: &[Message],
+        application_admitted: &mut impl FnMut(usize, u16),
+    ) -> Result<Vec<Action>, HandshakeError> {
         let mut actions = Vec::new();
 
         match &mut self.side {
@@ -813,40 +824,51 @@ impl Open {
                 }
             }
             OpenSide::ResumedServer { peer_commit, .. } if incoming.starts_with(peer_commit) => {
-                let data = application_tail(&incoming[peer_commit.len()..])?;
+                let data = application_batch(&incoming[peer_commit.len()..])?;
                 actions.push(alert(Alert::DuplicateFinishedReceived));
-                self.deliver(data, &mut actions);
+                self.deliver(data, &mut actions, application_admitted);
                 return Ok(actions);
             }
             _ => {}
         }
 
-        let [Message::ApplicationData { sequence, payload }] = incoming else {
+        if incoming.is_empty() {
             return Err(HandshakeError::UnexpectedDatagram);
-        };
-        self.deliver(Some((*sequence, payload)), &mut actions);
+        }
+        self.deliver(
+            application_batch(incoming)?,
+            &mut actions,
+            application_admitted,
+        );
         Ok(actions)
     }
 
-    fn deliver(&mut self, data: Option<(u16, &[u8])>, actions: &mut Vec<Action>) {
-        if let Some((sequence, payload)) = data
-            && sequence != 0
-            && self.replay.accept(sequence)
-        {
-            if let OpenSide::ResumedClient { confirmed, .. } = &mut self.side {
-                *confirmed = true;
+    fn deliver(
+        &mut self,
+        data: Vec<(u16, &[u8])>,
+        actions: &mut Vec<Action>,
+        application_admitted: &mut impl FnMut(usize, u16),
+    ) {
+        for (index, (sequence, payload)) in data.into_iter().enumerate() {
+            if sequence != 0 && self.replay.accept(sequence) {
+                if let OpenSide::ResumedClient { confirmed, .. } = &mut self.side {
+                    *confirmed = true;
+                }
+                application_admitted(index, sequence);
+                actions.push(Action::Deliver(payload.to_vec()));
             }
-            actions.push(Action::Deliver(payload.to_vec()));
         }
     }
 }
 
-fn application_tail(messages: &[Message]) -> Result<Option<(u16, &[u8])>, HandshakeError> {
-    match messages {
-        [] => Ok(None),
-        [Message::ApplicationData { sequence, payload }] => Ok(Some((*sequence, payload))),
-        _ => Err(HandshakeError::UnexpectedDatagram),
-    }
+fn application_batch(messages: &[Message]) -> Result<Vec<(u16, &[u8])>, HandshakeError> {
+    messages
+        .iter()
+        .map(|message| match message {
+            Message::ApplicationData { sequence, payload } => Ok((*sequence, payload.as_slice())),
+            _ => Err(HandshakeError::UnexpectedDatagram),
+        })
+        .collect()
 }
 
 /// Datagram replay window for application records already authenticated by the

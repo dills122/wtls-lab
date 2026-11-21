@@ -194,9 +194,16 @@ fn resumed_handshake_hellos_encode_supplied_unix_time() {
 }
 
 fn open_protected_association(link: &mut Link) -> (Adapter, Adapter) {
+    open_protected_association_with_budget(link, DatagramBudget::new(1200))
+}
+
+fn open_protected_association_with_budget(
+    link: &mut Link,
+    server_budget: DatagramBudget,
+) -> (Adapter, Adapter) {
     let (clients, servers) = contexts();
     let mut client = adapter(None, 1);
-    let mut server = adapter(Some(servers), 1);
+    let mut server = Adapter::new(Some(servers), server_budget, NonZeroUsize::MIN);
 
     link.send(client.connect(SERVER_ADDR, &clients, WALL, 0));
     let hello = link.take(SERVER_ADDR);
@@ -244,6 +251,98 @@ fn assert_application_delivery(events: Vec<Event>, source: SocketAddr, sequence:
     };
     assert_eq!(*remote, source);
     assert_eq!(payload.as_slice(), sequence.to_be_bytes());
+}
+
+fn assert_application_batch_delivery(events: &[Event], source: SocketAddr, sequences: &[u16]) {
+    assert_eq!(events.len(), sequences.len());
+    for (event, sequence) in events.iter().zip(sequences) {
+        assert!(matches!(
+            event,
+            Event::Deliver { remote, payload }
+                if *remote == source && payload.as_slice() == sequence.to_be_bytes()
+        ));
+    }
+}
+
+#[test]
+fn application_batch_replay_is_per_record_across_key_refresh_and_window_cutoff() {
+    let mut link = Link::default();
+    let (mut client, mut server) = open_protected_association(&mut link);
+    let records = (1..=39)
+        .map(|sequence| protected_application(&mut link, &mut client, SERVER_ADDR, sequence))
+        .collect::<Vec<_>>();
+    let record = |sequence: usize| records[sequence - 1].as_slice();
+
+    let reversed = [record(8), record(7)].concat();
+    assert_application_batch_delivery(
+        &server.receive(CLIENT_ADDR, &reversed, WALL, 5),
+        CLIENT_ADDR,
+        &[8, 7],
+    );
+    assert!(server.receive(CLIENT_ADDR, &reversed, WALL, 6).is_empty());
+
+    let mixed = [record(8), record(9), record(9), record(10)].concat();
+    assert_application_batch_delivery(
+        &server.receive(CLIENT_ADDR, &mixed, WALL, 7),
+        CLIENT_ADDR,
+        &[9, 10],
+    );
+    assert!(server.receive(CLIENT_ADDR, &mixed, WALL, 8).is_empty());
+
+    // Sequence 6 is fresh, but falls exactly outside the 32-record window
+    // after accepting sequence 38. Sequence 11 is still inside it.
+    let cutoff = [record(38), record(6), record(11), record(39)].concat();
+    assert_application_batch_delivery(
+        &server.receive(CLIENT_ADDR, &cutoff, WALL, 9),
+        CLIENT_ADDR,
+        &[38, 11, 39],
+    );
+    assert!(server.receive(CLIENT_ADDR, &cutoff, WALL, 10).is_empty());
+}
+
+#[test]
+fn application_batch_udp_budget_accepts_the_limit_and_rejects_one_byte_over() {
+    use wtls_lab::wire::DatagramTooLarge;
+
+    // Each record has a 5-byte header and 544 bytes of protected content.
+    const BATCH_LEN: usize = 2 * (5 + 544);
+    for limit in [BATCH_LEN, BATCH_LEN - 1] {
+        let mut link = Link::default();
+        let (mut client, mut server) =
+            open_protected_association_with_budget(&mut link, DatagramBudget::new(limit));
+        let first = vec![0x11; 520];
+        let second = vec![0x22; 520];
+        link.send(client.send_application(SERVER_ADDR, first.clone()));
+        let first_record = link.take(SERVER_ADDR);
+        link.send(client.send_application(SERVER_ADDR, second.clone()));
+        let second_record = link.take(SERVER_ADDR);
+        let batch = [first_record.as_slice(), &second_record].concat();
+        assert_eq!(batch.len(), BATCH_LEN);
+
+        let events = server.receive(CLIENT_ADDR, &batch, WALL, 5);
+        if limit == BATCH_LEN {
+            assert!(matches!(
+                events.as_slice(),
+                [Event::Deliver { remote: a, payload: x }, Event::Deliver { remote: b, payload: y }]
+                    if *a == CLIENT_ADDR && *b == CLIENT_ADDR && *x == first && *y == second
+            ));
+        } else {
+            assert!(matches!(
+                events.as_slice(),
+                [Event::Diagnostic {
+                    remote,
+                    reason: Diagnostic::InboundTooLarge(DatagramTooLarge { size: BATCH_LEN, limit: actual }),
+                }] if *remote == CLIENT_ADDR && *actual == limit
+            ));
+            assert_eq!(server.status(CLIENT_ADDR), Some(Status::Open));
+            for (record, expected) in [(first_record, first), (second_record, second)] {
+                assert!(matches!(
+                    server.receive(CLIENT_ADDR, &record, WALL, 6).as_slice(),
+                    [Event::Deliver { remote, payload }] if *remote == CLIENT_ADDR && *payload == expected
+                ));
+            }
+        }
+    }
 }
 
 // WAP-199-WTLS-20000218-a, §§9.2.3.1, 11.2 and Appendix B.3.

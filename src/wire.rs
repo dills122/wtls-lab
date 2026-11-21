@@ -13,6 +13,8 @@ mod session;
 #[cfg(test)]
 mod alert_tests;
 #[cfg(test)]
+mod application_batch_tests;
+#[cfg(test)]
 pub(crate) mod sequence_tests;
 
 use std::error::Error;
@@ -164,6 +166,7 @@ struct VerifiedCommit {
 
 struct Incoming<'a> {
     messages: Datagram,
+    application_records: Vec<&'a [u8]>,
     read: Direction,
     traffic: Option<Traffic>,
     checksum: [u8; 4],
@@ -344,6 +347,7 @@ impl WirePeer {
                 &flight.messages,
                 monotonic_ms,
                 &WireFinished(self.traffic.as_ref(), self.selection.as_ref()),
+                |_, _| {},
             )?;
             return self.apply(actions);
         }
@@ -471,9 +475,17 @@ impl WirePeer {
             incoming.traffic.as_ref().or(self.traffic.as_ref()),
             incoming.selection.as_ref().or(self.selection.as_ref()),
         );
-        let actions = self
-            .handshake
-            .receive_actions(&incoming.messages, monotonic_ms, &context);
+        let mut highest_application = None;
+        let actions = self.handshake.receive_actions(
+            &incoming.messages,
+            monotonic_ms,
+            &context,
+            |index, sequence| {
+                if highest_application.is_none_or(|(highest, _)| sequence > highest) {
+                    highest_application = Some((sequence, incoming.application_records[index]));
+                }
+            },
+        );
         drop(cache);
         let actions = match actions {
             Ok(actions) => actions,
@@ -497,28 +509,32 @@ impl WirePeer {
             self.peer_random = Some(*random);
         }
         let has_handshake = carries_handshake(&incoming.messages);
-        let accepted = if incoming.messages == [Message::Alert(Alert::DuplicateFinishedReceived)] {
-            // Acknowledgments produce no action, even when they confirm a commit.
-            true
-        } else if has_handshake && self.verified_commit.is_some() {
-            // A replayed commit or application record must not replace the close checksum.
-            actions
-                .iter()
-                .any(|action| matches!(action, Action::Deliver(_) | Action::Closed(_)))
-        } else {
-            has_handshake || !actions.is_empty()
-        };
         // Keep the newest accepted record as the close reference even when an
         // older record is delivered out of order.
-        if accepted
-            && self.highest_received_sequence.is_none_or(|highest| {
-                incoming
-                    .protected_sequence
-                    .is_some_and(|sequence| sequence > highest)
-            })
+        let reference = if incoming.application_records.is_empty() {
+            let accepted =
+                if incoming.messages == [Message::Alert(Alert::DuplicateFinishedReceived)] {
+                    // Acknowledgments can confirm a commit without producing an action.
+                    true
+                } else if has_handshake && self.verified_commit.is_some() {
+                    // A replayed commit alone must not replace the close checksum.
+                    actions
+                        .iter()
+                        .any(|action| matches!(action, Action::Closed(_)))
+                } else {
+                    has_handshake || !actions.is_empty()
+                };
+            accepted.then_some((incoming.protected_sequence, incoming.checksum))
+        } else {
+            highest_application.map(|(sequence, framed)| (Some(sequence), record_checksum(framed)))
+        };
+        if let Some((sequence, checksum)) = reference
+            && self
+                .highest_received_sequence
+                .is_none_or(|highest| sequence.is_some_and(|sequence| sequence > highest))
         {
-            self.last_received = incoming.checksum;
-            self.highest_received_sequence = incoming.protected_sequence;
+            self.last_received = checksum;
+            self.highest_received_sequence = sequence;
         }
         let established = actions.iter().find_map(|action| match action {
             Action::Established { kind, session } => Some((*kind, *session)),
@@ -725,6 +741,7 @@ impl WirePeer {
             }
         }
         let mut messages = prefix.map_or_else(Vec::new, |flight| flight.messages.clone());
+        let mut application_records = Vec::new();
         let prefix_len = messages.len();
         let mut awaiting_finished = false;
         let mut selection = None;
@@ -878,6 +895,7 @@ impl WirePeer {
                             Ok(message @ Message::Alert(Alert::CloseNotify(_))) if committed => {
                                 // Keep a verified commit prefix for the existing close path.
                                 messages.truncate(prefix_len);
+                                application_records.clear();
                                 messages.push(message);
                                 warning = None;
                                 break;
@@ -888,6 +906,9 @@ impl WirePeer {
                 }
                 _ => return Err(WireError::InvalidRecord),
             };
+            if matches!(message, Message::ApplicationData { .. }) {
+                application_records.push(&bytes[record_start..offset]);
+            }
             messages.push(message);
         }
         if awaiting_finished {
@@ -899,6 +920,7 @@ impl WirePeer {
         let (start, end, last) = last_record.ok_or(WireError::InvalidRecord)?;
         Ok(Incoming {
             messages,
+            application_records,
             read,
             traffic,
             checksum: record_checksum(&bytes[start..end]),

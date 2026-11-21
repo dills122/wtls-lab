@@ -5,7 +5,7 @@ use openssl::pkey::Public;
 
 use super::*;
 
-const NOW: u32 = 1_730_000_000;
+pub(super) const NOW: u32 = 1_730_000_000;
 const ISSUER: &str = "WTLS Alert CA; WTLS Lab; CA";
 const SUBJECT: &str = "Echo; WTLS Lab; CA; echo.lab.invalid";
 const WARNING: u8 = 1;
@@ -21,7 +21,7 @@ fn public(key: &Rsa<Private>) -> Rsa<Public> {
     Rsa::from_public_components(key.n().to_owned().unwrap(), key.e().to_owned().unwrap()).unwrap()
 }
 
-fn contexts() -> (ResumableClient, ResumableServer) {
+pub(super) fn contexts() -> (ResumableClient, ResumableServer) {
     static KEYS: OnceLock<(Rsa<Private>, Rsa<Private>)> = OnceLock::new();
     let (ca, key) =
         KEYS.get_or_init(|| (Rsa::generate(2048).unwrap(), Rsa::generate(2048).unwrap()));
@@ -39,7 +39,7 @@ fn contexts() -> (ResumableClient, ResumableServer) {
     )
 }
 
-fn send(actions: &[WireAction]) -> Vec<u8> {
+pub(super) fn send(actions: &[WireAction]) -> Vec<u8> {
     let mut sends = actions.iter().filter_map(|action| match action {
         WireAction::Send(bytes) => Some(bytes),
         _ => None,
@@ -75,12 +75,17 @@ fn establish_full(
     SessionId(id.try_into().unwrap())
 }
 
-fn full(client: &mut WirePeer, server: &mut WirePeer, at: u64) -> SessionId {
+pub(super) fn full(client: &mut WirePeer, server: &mut WirePeer, at: u64) -> SessionId {
     let offer = send(&client.start(at).unwrap());
     establish_full(client, server, &offer, at)
 }
 
-fn begin_resume(client: &mut WirePeer, server: &mut WirePeer, id: SessionId, at: u64) -> Vec<u8> {
+pub(super) fn begin_resume(
+    client: &mut WirePeer,
+    server: &mut WirePeer,
+    id: SessionId,
+    at: u64,
+) -> Vec<u8> {
     let offer = send(&client.start(at).unwrap());
     assert_eq!(offered_id(&offer), id.0);
     let response = send(&server.receive(&offer, at + 1).unwrap());
@@ -138,7 +143,7 @@ fn first_record_checksum(datagram: &[u8]) -> [u8; 4] {
         .to_be_bytes()
 }
 
-fn protected_alert(peer: &mut WirePeer, fragment: &[u8]) -> Vec<u8> {
+pub(super) fn protected_alert(peer: &mut WirePeer, fragment: &[u8]) -> Vec<u8> {
     assert!(peer.write.protected);
     let sequence = peer.write.next().unwrap();
     seal(peer, RecordType::Alert, sequence, fragment)
@@ -446,7 +451,7 @@ fn clear_alert_is_rejected_but_protected_generic_critical_closes_the_server() {
 }
 
 #[test]
-fn fatal_alert_revokes_the_session_and_disengages_only_its_receiver() {
+fn application_batch_fatal_alert_revokes_the_session_and_disengages_only_its_receiver() {
     let (clients, servers) = contexts();
     let (other_clients, _) = contexts();
     let mut client = clients.peer(NOW).unwrap();
@@ -474,11 +479,17 @@ fn fatal_alert_revokes_the_session_and_disengages_only_its_receiver() {
     let fragment = alert_fields(FATAL, HANDSHAKE_FAILURE, client.last_received);
     let warning = alert_fields(WARNING, NO_RENEGOTIATION, client.last_received);
     let before = send(&client.send_application(b"before alert".to_vec()).unwrap());
+    let more = send(
+        &client
+            .send_application(b"also before alert".to_vec())
+            .unwrap(),
+    );
     let warning = protected_alert(&mut client, &warning);
     let alert = protected_alert(&mut client, &fragment);
     let after = send(&client.send_application(b"after alert".to_vec()).unwrap());
     let datagram = [
         before.as_slice(),
+        &more,
         &warning,
         &alert,
         &after,
@@ -562,7 +573,7 @@ fn fatal_alert_closes_a_resumed_client_awaiting_confirmation() {
 }
 
 #[test]
-fn warning_and_unverified_alerts_preserve_the_association_and_critical_preserves_the_session() {
+fn application_batch_critical_alert_preserves_the_session_after_warnings_and_unverified_alerts() {
     let (clients, servers) = contexts();
     let id = full(
         &mut clients.peer(NOW).unwrap(),
@@ -630,6 +641,8 @@ fn warning_and_unverified_alerts_preserve_the_association_and_critical_preserves
     let critical = alert_fields(CRITICAL, UNKNOWN_KEY_ID, checksum);
     let sent_count = client.sent_checksums.len();
     let datagram = [
+        send(&server.send_application(b"first".to_vec()).unwrap()),
+        send(&server.send_application(b"second".to_vec()).unwrap()),
         protected_alert(&mut server, &critical),
         protected_alert(&mut server, &fatal),
     ]
@@ -653,7 +666,7 @@ fn warning_and_unverified_alerts_preserve_the_association_and_critical_preserves
 }
 
 #[test]
-fn warning_does_not_mask_a_prefixed_close_or_change_its_acknowledgment() {
+fn application_batch_prefixed_close_takes_priority_over_warning_and_data() {
     for scope in [CloseScope::Connection, CloseScope::Session] {
         let (clients, servers) = contexts();
         let id = full(
@@ -667,13 +680,17 @@ fn warning_does_not_mask_a_prefixed_close_or_change_its_acknowledgment() {
         server.receive(&commit, 13).unwrap();
 
         let checksum = client.last_received;
+        let first = send(&client.send_application(b"first".to_vec()).unwrap());
+        let second = send(&client.send_application(b"second".to_vec()).unwrap());
         let warning = alert_fields(WARNING, NO_RENEGOTIATION, checksum);
         let warning = protected_alert(&mut client, &warning);
         let close = protected_alert(
             &mut client,
             &encode_alert(Alert::CloseNotify(scope), checksum),
         );
-        let mut datagram = [commit.as_slice(), &warning, &close].concat();
+        let first = first.strip_prefix(commit.as_slice()).unwrap();
+        let second = second.strip_prefix(commit.as_slice()).unwrap();
+        let mut datagram = [commit.as_slice(), first, second, &warning, &close].concat();
         if scope == CloseScope::Connection {
             let fatal = alert_fields(FATAL, HANDSHAKE_FAILURE, checksum);
             datagram.extend(protected_alert(&mut client, &fatal));
@@ -705,7 +722,7 @@ fn warning_does_not_mask_a_prefixed_close_or_change_its_acknowledgment() {
 }
 
 #[test]
-fn an_omitted_length_in_a_cached_commit_still_consumes_the_sdu() {
+fn application_batch_cannot_follow_a_cached_lengthless_finished() {
     let (clients, servers) = contexts();
     let id = full(
         &mut clients.peer(NOW).unwrap(),
@@ -714,8 +731,8 @@ fn an_omitted_length_in_a_cached_commit_still_consumes_the_sdu() {
     );
     let mut client = clients.peer(NOW).unwrap();
     let mut server = servers.peer(NOW).unwrap();
-    let commit = begin_resume(&mut client, &mut server, id, 10);
-    let mut records = crate::decode_datagram(&commit).unwrap();
+    let explicit_commit = begin_resume(&mut client, &mut server, id, 10);
+    let mut records = crate::decode_datagram(&explicit_commit).unwrap();
     let keys = client.traffic.as_ref().unwrap();
     let finished = keys.open(Role::Client, records[1]).unwrap();
     records[1].length_form = LengthForm::DatagramRemainder;
@@ -737,6 +754,25 @@ fn an_omitted_length_in_a_cached_commit_still_consumes_the_sdu() {
             .contains(&WireAction::Established(HandshakeKind::Resumed))
     );
 
+    let first = send(&client.send_application(b"first".to_vec()).unwrap());
+    let second = send(&client.send_application(b"second".to_vec()).unwrap());
+    let suffix = [
+        first.strip_prefix(explicit_commit.as_slice()).unwrap(),
+        second.strip_prefix(explicit_commit.as_slice()).unwrap(),
+    ]
+    .concat();
+    assert_eq!(
+        server.receive(&[commit.as_slice(), &suffix].concat(), 14),
+        Err(WireError::InvalidRecord)
+    );
+    assert_eq!(
+        server.receive(&suffix, 14).unwrap(),
+        [
+            WireAction::Deliver(b"first".to_vec()),
+            WireAction::Deliver(b"second".to_vec())
+        ]
+    );
+
     let fatal = alert_fields(FATAL, HANDSHAKE_FAILURE, client.last_received);
     let alert = protected_alert(&mut client, &fatal);
     assert_eq!(
@@ -754,7 +790,7 @@ fn an_omitted_length_in_a_cached_commit_still_consumes_the_sdu() {
 }
 
 #[test]
-fn an_uncommitted_receive_epoch_and_a_failed_resume_preserve_the_cache() {
+fn application_batch_failed_finished_closes_the_pending_epoch_and_preserves_the_cache() {
     let (clients, servers) = contexts();
     let id = full(
         &mut clients.peer(NOW).unwrap(),
@@ -784,12 +820,22 @@ fn an_uncommitted_receive_epoch_and_a_failed_resume_preserve_the_cache() {
         .unwrap();
     *bad_proof.last_mut().unwrap() ^= 1;
     let authenticated_bad_finished = seal(&client, RecordType::Handshake, 0, &bad_proof);
-    let bad_commit = [&commit[..ccs.wire_len()], &authenticated_bad_finished].concat();
+    let first = send(&client.send_application(b"first".to_vec()).unwrap());
+    let second = send(&client.send_application(b"second".to_vec()).unwrap());
+    let bad_commit = [
+        &commit[..ccs.wire_len()],
+        &authenticated_bad_finished,
+        first.strip_prefix(commit.as_slice()).unwrap(),
+        second.strip_prefix(commit.as_slice()).unwrap(),
+    ]
+    .concat();
     assert_eq!(
         server.receive(&bad_commit, 15),
         Err(WireError::AuthenticationFailed)
     );
     assert_eq!(server.status(), Status::Closed);
+    assert!(server.verified_commit.is_none());
+    assert_eq!(server.receive(&first, 16).unwrap(), []);
 
     let mut retry_server = servers.peer(NOW).unwrap();
     let retry = begin_resume(&mut clients.peer(NOW).unwrap(), &mut retry_server, id, 20);

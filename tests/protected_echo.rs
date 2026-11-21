@@ -519,6 +519,182 @@ fn abbreviated_exchange_with_empty_vectors_matches_independent_wap_199_finished(
     );
 }
 
+fn ordinary_hello() -> Vec<u8> {
+    encode_handshake(&Message::ClientHello {
+        random: [0x41; 16],
+        resume: None,
+    })
+    .unwrap()
+}
+
+fn expected_algorithm_alert(hello: &[u8]) -> [WireAction; 1] {
+    let checksum = hello.chunks(4).fold(0, |sum, word| {
+        let mut padded = [0; 4];
+        padded[..word.len()].copy_from_slice(word);
+        sum ^ u32::from_be_bytes(padded)
+    });
+    let mut expected = vec![0xc2, 0, 0, 0, 6, 3, 40];
+    expected.extend_from_slice(&checksum.to_be_bytes());
+    [WireAction::Send(expected)]
+}
+
+#[test]
+fn algorithm_alert_refuses_an_ordinary_cipher_mac_mismatch() {
+    let (mut client, mut server) = peers(SUBJECT);
+    let mut fragment = ordinary_hello();
+    let suite = fragment.len() - 6;
+    assert_eq!(fragment[suite..suite + 2], [6, 3]);
+    fragment[suite..suite + 2].copy_from_slice(&[5, 2]);
+    for length_form in [LengthForm::Explicit, LengthForm::DatagramRemainder] {
+        let hello = encode_datagram(&[Record {
+            length_form,
+            ..clear_record(RecordType::Handshake, 0, &fragment)
+        }])
+        .unwrap();
+        let expected = expected_algorithm_alert(&hello);
+        assert_eq!(server.receive(&hello, 0).unwrap(), expected);
+        assert_eq!(server.receive_with_reply(&hello, 0).unwrap(), expected);
+        assert_eq!(server.status(), Status::Idle);
+        assert!(server.connection_info().is_none());
+        assert_eq!(server.deadline(), None);
+        assert!(server.tick(0).unwrap().is_empty());
+    }
+    establish(&mut client, &mut server);
+    let data = send(
+        &client
+            .send_application(b"corrected offer".to_vec())
+            .unwrap(),
+    );
+    assert_eq!(
+        server.receive(&data, 20).unwrap(),
+        [WireAction::Deliver(b"corrected offer".to_vec())]
+    );
+}
+
+#[test]
+fn algorithm_alert_requires_a_selectable_key_and_an_exact_pair() {
+    let (_, mut server) = peers(SUBJECT);
+    let mut late_rsa = [7, 0, 0].repeat(255);
+    late_rsa.extend([8, 0, 0]);
+    for (case, keys, pairs) in [
+        ("key", &[8, 1, 0][..], &[6, 3][..]),
+        ("pair", &[8, 0, 0][..], &[5, 2][..]),
+        ("both", &[7, 0, 0][..], &[5, 2][..]),
+        ("split pair", &[8, 0, 0][..], &[6, 2, 5, 3][..]),
+        ("empty keys", &[][..], &[6, 3][..]),
+        ("key index 256", &late_rsa, &[6, 3][..]),
+    ] {
+        let offer = [
+            &u16::try_from(keys.len()).unwrap().to_be_bytes()[..],
+            keys,
+            &[0, 0, u8::try_from(pairs.len()).unwrap()],
+            pairs,
+            &[1, 0, 2, 3],
+        ]
+        .concat();
+        let fragment = offered_hello(&[], &offer);
+        let hello = encode_datagram(&[clear_record(RecordType::Handshake, 0, &fragment)]).unwrap();
+        assert_eq!(
+            server.receive(&hello, 1).unwrap(),
+            expected_algorithm_alert(&hello),
+            "{case}"
+        );
+        assert_eq!(server.status(), Status::Idle);
+    }
+    // A matching key and pair are both selectable after other entries.
+    let fragment = offered_hello(&[], NONCANONICAL_OFFER);
+    let hello = encode_datagram(&[clear_record(RecordType::Handshake, 0, &fragment)]).unwrap();
+    let flight = send(&server.receive(&hello, 2).unwrap());
+    let records = decode_datagram(&flight).unwrap();
+    let selected = decode_server_hello(records[0].fragment).unwrap();
+    assert_eq!(selected.key_exchange_index, 2);
+    assert_eq!(selected.cipher_suite, [6, 3]);
+}
+
+#[test]
+fn algorithm_alert_keeps_invalid_openings_local() {
+    let (_, mut server) = peers(SUBJECT);
+    let mut fragment = ordinary_hello();
+    let suite = fragment.len() - 6;
+    fragment[suite..suite + 2].copy_from_slice(&[5, 2]);
+    let record = clear_record(RecordType::Handshake, 0, &fragment);
+    let hello = encode_datagram(&[record]).unwrap();
+    let mut no_sequence = vec![hello[0] & !0x40];
+    no_sequence.extend_from_slice(&hello[3..]);
+    let mut bad_vector = fragment.clone();
+    bad_vector[22] = 0xff; // Key-exchange vector claims more bytes than the body contains.
+    let mut bad_identifier = fragment.clone();
+    bad_identifier[25] = 3; // Unassigned identifier type.
+    let mut invalid = vec![
+        no_sequence,
+        hello[..hello.len() - 1].to_vec(),
+        [hello.as_slice(), hello.as_slice()].concat(),
+        encode_datagram(&[Record {
+            sequence: 1,
+            ..record
+        }])
+        .unwrap(),
+        encode_datagram(&[Record {
+            cipher_spec: CipherSpec::Current,
+            ..record
+        }])
+        .unwrap(),
+    ];
+    for malformed in [bad_vector, bad_identifier] {
+        invalid.push(
+            encode_datagram(&[Record {
+                fragment: &malformed,
+                ..record
+            }])
+            .unwrap(),
+        );
+    }
+    for hello in invalid {
+        let error = server.receive_with_reply(&hello, 1).unwrap_err();
+        assert_eq!(error.reply, None);
+        assert_eq!(server.status(), Status::Idle);
+    }
+
+    // A cache miss would normally get critical unknown_key_id even without RSA.
+    // Invalid admission choices win over it.
+    let resume_only = offered_hello(OFFERED_SESSION, &[0, 0, 0, 0, 2, 6, 3, 1, 0, 2, 3]);
+    for (offset, value) in [
+        (3, 2),
+        (resume_only.len() - 2, 1),
+        (resume_only.len() - 3, 1),
+    ] {
+        let mut fragment = resume_only.clone();
+        fragment[offset] = value;
+        let hello = encode_datagram(&[Record {
+            fragment: &fragment,
+            ..record
+        }])
+        .unwrap();
+        let error = server.receive_with_reply(&hello, 2).unwrap_err();
+        assert_eq!(error.diagnostic, WireError::UnsupportedProfile);
+        assert_eq!(error.reply, None);
+        assert_eq!(server.status(), Status::Idle);
+    }
+}
+
+#[test]
+fn algorithm_alert_keeps_the_key_refresh_cap() {
+    for (proposed, expected) in [(0, 0), (255, 3)] {
+        let (_, mut server) = peers(SUBJECT);
+        let mut fragment = ordinary_hello();
+        *fragment.last_mut().unwrap() = proposed;
+        let hello = encode_datagram(&[clear_record(RecordType::Handshake, 0, &fragment)]).unwrap();
+        let flight = send(&server.receive(&hello, 1).unwrap());
+        let records = decode_datagram(&flight).unwrap();
+        assert_eq!(
+            decode_server_hello(records[0].fragment)
+                .unwrap()
+                .key_refresh,
+            expected
+        );
+    }
+}
+
 #[test]
 fn authenticated_server_rejects_offers_without_a_required_choice() {
     let (_, mut server) = peers(SUBJECT);
@@ -535,16 +711,12 @@ fn authenticated_server_rejects_offers_without_a_required_choice() {
         offer[index] = value;
         let fragment = offered_hello(OFFERED_SESSION, &offer);
         let hello = encode_datagram(&[clear_record(RecordType::Handshake, 0, &fragment)]).unwrap();
-        let expected = if value == 255 {
-            WireError::InvalidMessage
-        } else {
-            WireError::UnsupportedProfile
+        let expected = match index {
+            6 if value == 255 => Err(WireError::InvalidMessage),
+            26 | 27 => Err(WireError::UnsupportedProfile),
+            _ => Ok(expected_algorithm_alert(&hello).to_vec()),
         };
-        assert_eq!(
-            server.receive(&hello, 1),
-            Err(expected),
-            "offer byte {index}"
-        );
+        assert_eq!(server.receive(&hello, 1), expected, "offer byte {index}");
         assert_eq!(server.status(), Status::Idle);
     }
     let valid = offered_hello(b"old", NONCANONICAL_OFFER);

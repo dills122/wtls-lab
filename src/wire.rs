@@ -13,6 +13,8 @@ mod session;
 #[cfg(test)]
 mod alert_tests;
 #[cfg(test)]
+mod algorithm_alert_tests;
+#[cfg(test)]
 mod application_batch_tests;
 #[cfg(test)]
 mod certificate_alert_tests;
@@ -688,6 +690,10 @@ impl WirePeer {
         fragment: &[u8],
         monotonic_ms: u64,
     ) -> Result<Option<InitialAlert>, WireError> {
+        let authenticated = matches!(self.side, Side::Server(_));
+        if authenticated {
+            offer.check_authenticated_opening()?;
+        }
         let offered = offer.offered_session();
         let cached = if let Some(id) = offered {
             self.find_session(Some(id), monotonic_ms)?
@@ -696,7 +702,7 @@ impl WirePeer {
             None
         };
         if cached.is_none()
-            && matches!(self.side, Side::Server(_))
+            && authenticated
             && !offer.session_id.is_empty()
             && offer.key_exchanges.is_empty()
         {
@@ -715,7 +721,16 @@ impl WirePeer {
             (Side::LegacyServer(_), None) => WINWAP_PARAMETERS,
             (_, None) => FIXED_PARAMETERS,
         };
-        let selection = ServerSelection::choose(offer, fragment, parameters, cached.is_some())?;
+        let Some(selection) =
+            ServerSelection::choose(offer, fragment, parameters, cached.is_some())
+        else {
+            // Admission has already validated the authenticated record profile.
+            // Only full key exchange and cipher/MAC selection can fail here.
+            if authenticated && cached.is_none() {
+                return Ok(Some(InitialAlert::HandshakeFailure));
+            }
+            return Err(WireError::UnsupportedProfile);
+        };
         if let Some(session) = &cached {
             let local = self.random.ok_or(WireError::InvalidRecord)?;
             if local == offer.random {

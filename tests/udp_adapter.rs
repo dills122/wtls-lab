@@ -656,6 +656,117 @@ fn pending_client_hello_rejects_candidates_and_keeps_original_flight() {
 }
 
 #[test]
+fn algorithm_alert_keeps_a_pending_association_and_its_cached_session() {
+    use wtls_lab::LengthForm;
+    use wtls_lab::wire::DatagramTooLarge;
+
+    let (clients, servers) = contexts();
+    let mut a = adapter(None, 1);
+    let mut b = adapter(None, 1);
+    let mut server =
+        adapter(Some(servers), 1).with_pending_handshake_timeout_ms(NonZeroU64::new(20).unwrap());
+    let mut link = Link::default();
+    let id = full_handshake_with_hello_times(&mut link, &mut a, &mut server, &clients);
+
+    link.send(server.close(CLIENT_ADDR, CloseScope::Connection));
+    let close = link.take(CLIENT_ADDR);
+    link.send(a.receive(SERVER_ADDR, &close, WALL, 105));
+    let reply = link.take(SERVER_ADDR);
+    server.receive(CLIENT_ADDR, &reply, WALL, 106);
+    assert_eq!(server.status(CLIENT_ADDR), None);
+
+    link.send(b.connect(SERVER_ADDR, &clients, WALL + 1, 107));
+    let mut hello_b = link.take(SERVER_ADDR);
+    assert_eq!(assert_client_hello_time(&hello_b, WALL + 1), id);
+    let suite = hello_b.len() - 6;
+    assert_eq!(hello_b[suite..suite + 2], [6, 3]);
+    hello_b[suite..suite + 2].copy_from_slice(&[5, 2]);
+    let mut expected = vec![0xc2, 0, 0, 0, 6, 3, 40, 0, 0, 0, 0];
+    for (index, byte) in hello_b.iter().enumerate() {
+        expected[7 + index % 4] ^= byte;
+    }
+    let assert_alert = |events: Vec<Event>| {
+        assert!(matches!(events.as_slice(),
+            [Event::Send { remote, bytes }] if *remote == CLIENT_ADDR && *bytes == expected));
+    };
+    assert_alert(server.receive(CLIENT_ADDR, &hello_b, WALL, 107));
+    assert_eq!(server.status(CLIENT_ADDR), None);
+    assert_eq!(server.deadline(), None);
+    assert!(server.tick(108).is_empty());
+
+    link.send(a.connect(SERVER_ADDR, &clients, WALL - 1, 109));
+    let hello_a = link.take(SERVER_ADDR);
+    assert_eq!(assert_client_hello_time(&hello_a, WALL - 1), id);
+    link.send(server.receive(CLIENT_ADDR, &hello_a, WALL, 110));
+    let flight_a = link.take(CLIENT_ADDR);
+    assert_eq!(assert_server_hello_time(&flight_a, WALL), id);
+    assert_eq!(server.deadline(), Some(130));
+
+    // A complete incompatible hello can still be stopped by the inbound budget.
+    let mut fragment = decode_datagram(&hello_b).unwrap()[0].fragment.to_vec();
+    let extra_keys = [7, 0, 0].repeat(400);
+    let key_length = u16::try_from(3 + extra_keys.len()).unwrap();
+    let key_offset = 3 + 1 + 16 + 1 + id.len();
+    assert_eq!(fragment[key_offset..key_offset + 2], [0, 3]);
+    fragment[key_offset..key_offset + 2].copy_from_slice(&key_length.to_be_bytes());
+    fragment.splice(key_offset + 2..key_offset + 2, extra_keys);
+    let body_length = u16::try_from(fragment.len() - 3).unwrap();
+    fragment[1..3].copy_from_slice(&body_length.to_be_bytes());
+    let oversized = wtls_lab::encode_datagram(&[wtls_lab::Record {
+        length_form: LengthForm::Explicit,
+        fragment: &fragment,
+        ..decode_datagram(&hello_b).unwrap()[0]
+    }])
+    .unwrap();
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, &oversized, WALL, 111).as_slice(),
+        [Event::Diagnostic {
+            remote,
+            reason: Diagnostic::InboundTooLarge(DatagramTooLarge {
+                size,
+                limit: 1200,
+            }),
+        }] if *remote == CLIENT_ADDR && *size == oversized.len()
+    ));
+
+    assert_alert(server.receive(CLIENT_ADDR, &hello_b, WALL, 112));
+    assert_alert(server.receive(CLIENT_ADDR, &hello_b, WALL, 113));
+    let other = SocketAddr::new(CLIENT_ADDR.ip(), CLIENT_ADDR.port() + 1);
+    assert!(matches!(
+        server.receive(other, &hello_b, WALL, 114).as_slice(),
+        [Event::Diagnostic { remote, reason: Diagnostic::AtCapacity }] if *remote == other
+    ));
+    let mut same_random = hello_a.clone();
+    same_random[suite..suite + 2].copy_from_slice(&[5, 2]);
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, &same_random, WALL, 115).as_slice(),
+        [Event::Diagnostic { remote, reason: Diagnostic::Protocol(_) }] if *remote == CLIENT_ADDR
+    ));
+    assert_eq!(server.status(CLIENT_ADDR), Some(Status::Negotiating));
+    assert_eq!(server.deadline(), Some(130));
+    assert!(server.tick(116).is_empty());
+    link.send(server.receive(CLIENT_ADDR, &hello_a, WALL, 117));
+    assert_eq!(link.take(CLIENT_ADDR), flight_a);
+
+    let events = a.receive(SERVER_ADDR, &flight_a, WALL, 118);
+    assert!(established(&events, SERVER_ADDR, HandshakeKind::Resumed));
+    link.send(events);
+    let commit_a = link.take(SERVER_ADDR);
+    let events = server.receive(CLIENT_ADDR, &commit_a, WALL, 119);
+    assert!(established(&events, CLIENT_ADDR, HandshakeKind::Resumed));
+    link.send(server.receive(CLIENT_ADDR, &commit_a, WALL, 119));
+    let confirmation = link.take(CLIENT_ADDR);
+    assert!(a.receive(SERVER_ADDR, &confirmation, WALL, 119).is_empty());
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, &hello_b, WALL, 120).as_slice(),
+        [Event::Diagnostic { remote, reason: Diagnostic::Protocol(_) }] if *remote == CLIENT_ADDR
+    ));
+    assert_eq!(server.status(CLIENT_ADDR), Some(Status::Open));
+    assert_eq!(server.deadline(), None);
+    assert_protected_echo(&mut link, &mut a, &mut server, 121);
+}
+
+#[test]
 fn pending_client_hello_replacement_expires_at_original_deadline() {
     let (clients, servers) = contexts();
     let mut a = adapter(None, 1);

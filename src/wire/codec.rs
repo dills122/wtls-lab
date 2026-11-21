@@ -72,11 +72,12 @@ const RSA_OFFER: KeyExchangeOffer<'static> = KeyExchangeOffer {
 impl ClientHello<'_> {
     /// Report the first reason the authenticated server cannot select this offer.
     pub fn profile_mismatch(&self) -> Option<&'static str> {
-        self.select_key_exchange(FIXED_PARAMETERS).err()
+        self.check_record_choices(FIXED_PARAMETERS)
+            .and_then(|()| self.key_exchange_index(FIXED_PARAMETERS))
+            .err()
     }
 
-    fn select_key_exchange(&self, parameters: NegotiatedParameters) -> Result<u8, &'static str> {
-        self.check_record_choices(parameters)?;
+    fn key_exchange_index(&self, parameters: NegotiatedParameters) -> Result<u8, &'static str> {
         // Treat key-exchange identifiers independently of trusted authorities.
         let index = self
             .key_exchanges
@@ -95,7 +96,7 @@ impl ClientHello<'_> {
             })
     }
 
-    pub(super) fn check_record_choices(
+    fn check_version_and_sequence(
         &self,
         parameters: NegotiatedParameters,
     ) -> Result<(), &'static str> {
@@ -105,6 +106,23 @@ impl ClientHello<'_> {
         if self.sequence_mode != parameters.sequence_mode {
             return Err("explicit sequence numbering required");
         }
+        Ok(())
+    }
+
+    pub(super) fn check_authenticated_opening(&self) -> Result<(), WireError> {
+        self.check_version_and_sequence(FIXED_PARAMETERS)
+            .map_err(|_| WireError::UnsupportedProfile)?;
+        if !self.compression.contains(&FIXED_PARAMETERS.compression) {
+            return Err(WireError::UnsupportedProfile);
+        }
+        Ok(())
+    }
+
+    pub(super) fn check_record_choices(
+        &self,
+        parameters: NegotiatedParameters,
+    ) -> Result<(), &'static str> {
+        self.check_version_and_sequence(parameters)?;
         if !self
             .cipher_suites
             .contains(&[parameters.bulk_cipher, parameters.mac])
@@ -135,19 +153,15 @@ impl ServerSelection {
         bytes: &[u8],
         mut parameters: NegotiatedParameters,
         abbreviated: bool,
-    ) -> Result<Self, WireError> {
-        let key_exchange_index = if abbreviated {
-            offer
-                .check_record_choices(parameters)
-                .map_err(|_| WireError::UnsupportedProfile)?;
-            offer.select_key_exchange(parameters).unwrap_or(0)
-        } else {
-            offer
-                .select_key_exchange(parameters)
-                .map_err(|_| WireError::UnsupportedProfile)?
+    ) -> Option<Self> {
+        offer.check_record_choices(parameters).ok()?;
+        let key_exchange_index = match offer.key_exchange_index(parameters) {
+            Ok(index) => index,
+            Err(_) if abbreviated => 0,
+            Err(_) => return None,
         };
         parameters.key_refresh = offer.key_refresh.min(parameters.key_refresh);
-        Ok(Self {
+        Some(Self {
             parameters,
             key_exchange_index,
             client_hello: bytes.to_vec(),

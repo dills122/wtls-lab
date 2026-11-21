@@ -433,10 +433,7 @@ fn trust_03_wrong_leaf_or_misplaced_authority_gets_only_fatal_alert() {
 fn trust_04_empty_authority_list_still_verifies_the_leaf() {
     let ca = &keys().ca;
     let mut server = WirePeer::server(server_identity(ca, SUBJECT), NOW).unwrap();
-    assert_eq!(
-        server.receive(&offered_hello(&[], &[5, 0, 0], &[]), 0),
-        Err(WireError::UnsupportedProfile)
-    );
+    assert_alert(&mut server, &offered_hello(&[], &[5, 0, 0], &[]), 0, 3, 40);
     let mut client = WirePeer::client(RETRY, trust(ca), NOW);
     let offer = start(&mut client, 0);
     assert!(
@@ -636,6 +633,97 @@ fn trust_06_resumption_omission_mismatch_isolation_and_fallback() {
     let flight = receive(&mut server, &stale, 105);
     assert_ne!(server_id(&flight), id);
     assert_full_flight(&flight, 1, &leaf(ca, ISSUER, SUBJECT, VALID));
+}
+
+#[test]
+fn algorithm_alert_respects_cache_and_authority_precedence() {
+    let ca = &keys().ca;
+    let clients = ResumableClient::provisioned(RETRY, trust(ca), TTL);
+    // Give the client enough lifetime to offer the original ID after server expiry.
+    let servers = ResumableServer::new(
+        server_identity(ca, SUBJECT),
+        NonZeroUsize::MIN,
+        NonZeroU64::new(50).unwrap(),
+    );
+    let mut client = clients.peer(NOW).unwrap();
+    let mut server = servers.peer(NOW).unwrap();
+    let flight = receive(&mut server, &start(&mut client, 0), 1);
+    let id = server_id(&flight);
+    finish_full(&mut client, &mut server, &flight, 2);
+
+    let wrong = rsa_hash(hash(&keys().other_ca));
+    let unknown = offered_hello(b"old", &[], &wrong);
+    let mut rejected = servers.peer(NOW).unwrap();
+    assert_alert(&mut rejected, &unknown, 10, 2, 52);
+    assert_alert(&mut rejected, &offered_hello(&id, &[], &wrong), 11, 3, 40);
+    assert_alert(
+        &mut rejected,
+        &offered_hello(&[], &[8, 1, 0], &[]),
+        12,
+        3,
+        40,
+    );
+    let mut inadmissible = offered_hello(&id, &RSA_OFFER, &wrong);
+    let compression = inadmissible.len() - 3;
+    inadmissible[compression] = 1;
+    let error = rejected.receive_with_reply(&inadmissible, 13).unwrap_err();
+    assert_eq!(error.diagnostic, WireError::UnsupportedProfile);
+    assert_eq!(error.reply, None);
+
+    // Even with a known ID, an offer without its original pair cannot resume.
+    for (at, exchanges, level, description) in [(14, &RSA_OFFER[..], 3, 40), (15, &[][..], 2, 52)] {
+        let mut incompatible = offered_hello(&id, exchanges, &[]);
+        let suite = incompatible.len() - 6;
+        incompatible[suite..suite + 2].copy_from_slice(&[5, 2]);
+        assert_alert(&mut rejected, &incompatible, at, level, description);
+    }
+
+    for (at, exchanges) in [(16, &[][..]), (17, &[8, 1, 0][..])] {
+        let mut server = servers.peer(NOW).unwrap();
+        let offer = offered_hello(&id, exchanges, &[]);
+        let flight = receive(&mut server, &offer, at);
+        assert_abbreviated(&flight, id, 0);
+        assert_eq!(
+            decode_server_hello(decode_datagram(&flight).unwrap()[0].fragment)
+                .unwrap()
+                .cipher_suite,
+            [6, 3]
+        );
+    }
+
+    // The gateway session was established at t=3. Complete a same-ID resume
+    // immediately before original expiry, then recover with a new full session.
+    let mut client = clients.peer(NOW).unwrap();
+    let mut server = servers.peer(NOW).unwrap();
+    let offer = start(&mut client, 51);
+    assert_eq!(
+        decode_client_hello(client_hello(&offer))
+            .unwrap()
+            .session_id,
+        id
+    );
+    let flight = receive(&mut server, &offer, 52);
+    assert_abbreviated(&flight, id, 1);
+    let actions = client.receive(&flight, 52).unwrap();
+    assert!(actions.contains(&WireAction::Established(HandshakeKind::Resumed)));
+    assert_eq!(
+        server.receive(sends(&actions), 52).unwrap(),
+        [WireAction::Established(HandshakeKind::Resumed)]
+    );
+
+    let mut client = clients.peer(NOW).unwrap();
+    let offer = start(&mut client, 53);
+    assert_eq!(
+        decode_client_hello(client_hello(&offer))
+            .unwrap()
+            .session_id,
+        id
+    );
+    assert_alert(&mut rejected, &offered_hello(&id, &[], &[]), 53, 2, 52);
+    let flight = receive(&mut rejected, &offer, 54);
+    assert_ne!(server_id(&flight), id);
+    assert_full_flight(&flight, 1, &leaf(ca, ISSUER, SUBJECT, VALID));
+    finish_full(&mut client, &mut rejected, &flight, 55);
 }
 
 #[test]

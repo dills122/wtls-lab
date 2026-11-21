@@ -265,6 +265,13 @@
         ],
         "scope": "Exact Ruflo review and 108 Rust tests. The deterministic adapter link dropped only the final server CCS/Finished datagram of a full handshake. It verified the exact client retry deadline, byte-identical client and server SDUs, no duplicate establishment, and protected application echo after recovery."
       }
+    },
+    {
+      "id": "WTLS-CL-HELLO-UNIX-TIME",
+      "workItem": "WTLS-217",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a §§10.5.1.2–10.5.1.3, with WAP-199_103 A.1 S-200 (M) and A.2 C-200 (O)",
+      "statement": "The supported Rust client and server encode the exact supplied Unix seconds in the first four bytes of each hello Random on both full and abbreviated handshakes. The independent monotonic millisecond clock drives scheduling and cache timing."
     }
   ]
 }

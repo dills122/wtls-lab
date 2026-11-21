@@ -1,0 +1,30 @@
+{
+  "workItem": "WTLS-217",
+  "clauses": [
+    "WTLS-CL-HELLO-UNIX-TIME"
+  ],
+  "objective": "Close only G5 in docs/WAP_199_EVIDENCE_MATRIX.md through two deterministic tests in tests/udp_adapter.rs. Use the existing in-memory link and normal Adapter::connect and receive paths with fixed wall and monotonic clocks. Use names full_handshake_hellos_encode_supplied_unix_time and resumed_handshake_hellos_encode_supplied_unix_time. In each handshake supply different Unix seconds for the client and server. Inspect the emitted ClientHello and ServerHello records and compare their on-wire four-byte Random time prefixes to the exact caller-supplied big-endian u32 seconds. Validate that these are the expected hello messages and WTLS records. Use distinct, increasing monotonic milliseconds, with values numerically distinct from the wall times. No sleeps, current wall-time reads, sockets, live peers or VM work. Complete both handshakes and assert both endpoints report Full or Resumed respectively. For the resumed test first establish a full session using the same authenticated contexts, close only the connection, then offer and echo the same cached ID. Make each role's resumed wall time different from its own full wall time so the test catches reuse of the original hello time. Existing fixture certificates are valid WALL-1 through WALL+1, so full times WALL-1 and WALL and resumed times WALL and WALL+1 allow four clock assignments with neither role reusing its own wall time. Reuse existing test helpers and fixtures, keeping the assertions explicit and scope tight. This is a coverage-only slice; runtime is expected to pass, so no red step is required. If a runtime defect appears, report it without protocol code edits. Run focused tests, adapter suite, formatting and diff check. Maintainer owns docs and evidence.",
+  "paths": [
+    "tests/udp_adapter.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "udp_adapter",
+      "hellos_encode_supplied_unix_time"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "udp_adapter"
+    ]
+  ],
+  "timeoutSeconds": 480
+}

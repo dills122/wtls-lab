@@ -307,3 +307,46 @@ The port-filtered UDP 9201/9203 capture has SHA-256
 `6167ca09a805a65bcb40f241d69960145771ff1c2da074477f03511668bfd957`.
 The result applies to a graceful simulator application restart on the same
 XP overlay.
+
+## BlackBerry provisioned-trust reconnect lifecycle
+
+WTLS-213 used the stock BlackBerry 7290 simulator (software `4.0.0.132`) on
+an isolated XP overlay. Ruflo reviewed the acceptance criteria. The
+endpoint reused the WTLS-212 lab wrapper, built from `08ae315`. Its protocol
+and UDP adapter source matched the WTLS-213 baseline `d02324e`. One strict
+`ServerIdentity::provisioned` gateway process, certificate, and in-memory
+session cache served all three connections on UDP 9203.
+
+The operator enrolled a fresh disposable native CA once through the stock
+Browser on UDP 9201. The captured WSP response carried the exact root bytes,
+and its details showed **Explicitly Trusted**. **Prompt For Server Trust**
+was **Yes**. The Browser rendered the protected page on each connection
+without a gateway certificate prompt or approval.
+
+| Visit | Offered session ID | Selected session ID | Handshake | Verified page acknowledgment |
+| --- | --- | --- | --- | --- |
+| First visit | `a3ae109830b84aa6` | `ff638f53df37b626` | Full | `0fb2` |
+| Refresh after protected Connection close | `ff638f53df37b626` | `ff638f53df37b626` | Resumed | `0161` |
+| Refresh after protected Session close | `ff638f53df37b626` | `25ec9d1c3e978698` | Full | `2f75` |
+
+All three ClientHellos advertised the exact enrolled authority once in a
+29-entry list. The full handshakes carried the same leaf in the certificate
+flight and included client key exchange. The middle handshake sent
+ServerHello, ChangeCipherSpec, and protected Finished in one server flight
+with no certificate. Both peers used fresh hello randoms for all three
+handshakes. The gateway verified the client Finished and the matching
+protected WSP page acknowledgment every time.
+
+The trace shows one protected client application record after each close
+and before the next ClientHello. The gateway logged a state diagnostic for
+each record and completed both subsequent handshakes. The encrypted
+application contents are opaque in the trace.
+
+The CA's RSA modulus SHA-1 was `190b8e137c654965d1cce4870ab0b276ff74fe8a`.
+The root certificate SHA-256 was
+`dc7ca8c326b25f6755aededd2a4d70fd4d04cf88fea0d822cae6dfa3693a227f` and
+the leaf SHA-256 was `387f79bf310fb27a9d4600eb7f4a31db1c5f348ba0558096892003809224ef1b`.
+The [32-datagram secure trace](blackberry-7290-provisioned-lifecycle.trace)
+has SHA-256 `8ec6ac287601a2b14072590422e71185d3f46899ef73dfd9a489f2f3f0522442`.
+The UDP 9201/9203 capture has SHA-256
+`7e0692c1c7a4a2987adde5a0be22026f7f213b13c3b262b184eb4e4001214ac4`.

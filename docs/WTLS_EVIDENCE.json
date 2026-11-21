@@ -206,6 +206,24 @@
         "captureSha256": "6167ca09a805a65bcb40f241d69960145771ff1c2da074477f03511668bfd957",
         "scope": "Ruflo plan review, confirmed Windows process exit and relaunch, exact CA entry in both ClientHellos, separate gateway leaves and fresh caches, and two full handshakes with verified protected WSP acknowledgments. No re-enrollment or leaf approval after restart."
       }
+    },
+    {
+      "id": "WTLS-CL-BLACKBERRY-PROVISIONED-LIFECYCLE",
+      "workItem": "WTLS-213",
+      "status": "verified",
+      "source": "WAP-199 §§10.2–10.5.2, with WAP-199_104 and WAP-199_105 §3.3",
+      "statement": "With the lab CA enrolled, the stock BlackBerry 7290 authenticates the gateway in a full handshake, resumes after protected Connection close, and performs a new full handshake after protected Session close without certificate prompts.",
+      "evidence": {
+        "testedCommit": "d02324e220447090b07fd960acb1185d805d703f",
+        "provenance": "fixtures/HISTORICAL_PEERS.md",
+        "fixture": "fixtures/blackberry-7290-provisioned-lifecycle.trace",
+        "authorityModulusSha1": "190b8e137c654965d1cce4870ab0b276ff74fe8a",
+        "rootCertificateSha256": "dc7ca8c326b25f6755aededd2a4d70fd4d04cf88fea0d822cae6dfa3693a227f",
+        "leafCertificateSha256": "387f79bf310fb27a9d4600eb7f4a31db1c5f348ba0558096892003809224ef1b",
+        "captureSha256": "7e0692c1c7a4a2987adde5a0be22026f7f213b13c3b262b184eb4e4001214ac4",
+        "peerObservation": "The handset reoffered ff638f53df37b626 after both closes. The gateway echoed it after Connection close, and after Session close issued 25ec9d1c3e978698 in a full handshake. Matching protected page acknowledgments were 0fb2, 0161 and 2f75.",
+        "scope": "Ruflo plan review and live verification on one isolated stock simulator and one strict gateway process. Native CA enrollment occurred once before the run. Certificate prompts stayed enabled, with no leaf approval. A protected client application record arrived after each close and the gateway discarded it before the next handshake."
+      }
     }
   ]
 }

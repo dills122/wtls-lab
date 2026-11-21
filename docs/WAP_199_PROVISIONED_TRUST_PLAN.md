@@ -117,6 +117,13 @@ session cache and a new leaf signed by that authority. The handset completed
 a full handshake and protected WSP exchange without a certificate prompt.
 [Live restart capture](../fixtures/HISTORICAL_PEERS.md#blackberry-ca-persistence-across-restart)
 
+WTLS-213 verified the full, resumed, full sequence through one strict
+gateway using the enrolled lab CA. The BlackBerry reoffered its cached ID
+after both close scopes. The gateway resumed after Connection close and
+issued a new ID after Session close. All three protected page acknowledgments
+were verified, with certificate prompts enabled throughout.
+[Live lifecycle capture](../fixtures/HISTORICAL_PEERS.md#blackberry-provisioned-trust-reconnect-lifecycle)
+
 ## Approved decisions
 
 - A full authenticated offer may omit the authority list. A nonempty list requires a compatible match.

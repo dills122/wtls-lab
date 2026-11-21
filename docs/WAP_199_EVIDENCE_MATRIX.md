@@ -100,9 +100,9 @@ association stays open. Alerts advance the wire counter and can reach a
 separate exhaustion check during encoding. An encoding error there aborts
 the association. The adapter retires peers that report `Closed`. Test both
 send paths and both roles at the last usable number. Check that numbers
-never wrap and that endpoints and adapters reach a terminal state. Decide
-cache treatment explicitly because connection retirement and session
-invalidation have separate meanings. [Application guard](../src/handshake.rs#L707) · [Wire send](../src/wire.rs#L306) · [Wire counter](../src/wire.rs#L139) · [Encoding failure](../src/wire.rs#L945) · [Adapter retirement](../src/udp.rs#L292)
+never wrap and that endpoints and adapters reach a terminal state. The
+[WTLS-215 design](WAP_199_SEQUENCE_EXHAUSTION_PLAN.md) preserves an eligible
+cached session on local exhaustion. [Application guard](../src/handshake.rs#L707) · [Wire send](../src/wire.rs#L306) · [Wire counter](../src/wire.rs#L139) · [Encoding failure](../src/wire.rs#L945) · [Adapter retirement](../src/udp.rs#L292)
 
 ### G2. Full handshake final flight retry
 

@@ -365,6 +365,13 @@
         ],
         "scope": "Exact Ruflo review and 129 Rust tests. Both UDP roles receive independently protected application records in datagram order, including after an abbreviated client commit. Tests cover both length forms, replay and key refresh, invalid suffix rollback, the UDP budget, verified commit retries, and close checksum and cache effects. Outbound batching and general content-type interleaving remain separate scope. BlackBerry evidence covers single-record traffic."
       }
+    },
+    {
+      "id": "WTLS-CL-CERTIFICATE-REJECTION-ALERT",
+      "workItem": "WTLS-221",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a §§9.2.3.1, 10.2–10.2.2, 10.5.2, 10.5.5; WAP-199_103 S/C-020–022; WAP-199_104 and _105",
+      "statement": "The provisioned client returns a typed local certificate rejection and one clear fatal reply for a classified native leaf failure in a complete full server flight. The gateway can retire the pending attempt while eligible verified sessions retain their original expiry."
     }
   ]
 }

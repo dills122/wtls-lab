@@ -1,0 +1,47 @@
+{
+  "workItem": "WTLS-221",
+  "clauses": [
+    "WTLS-CL-CERTIFICATE-REJECTION-ALERT"
+  ],
+  "objective": "Implement the reviewed docs/WAP_199_CERTIFICATE_ALERT_PLAN.md exactly in this standalone wtls-lab worktree. Start with a TRUST-05-derived deterministic failing regression and record red/green, using the existing UDP adapter first to demonstrate diagnostic without send if useful. Apply only to the opt-in provisioned client, complete, well-framed, ordered full server flight for a fresh session before traffic keys. Classify supported native corrupt leaf or proven signature mismatch including claimed issuer with different signing key as 42, reliably identified complete native RSA leaf outside supported size as 43, unrecognized issuer as 48, wrong trusted subject as 46, and expired/not-yet-valid as 45. Use fatal level 3 and order structure/profile, issuer, signature, subject, then validity. Preserve inclusive dates. Reject unsupported or malformed outer input without a certificate reply. Keep unclassified inner variants and provider/encoding or ambiguous errors local; separate operational errors from proven signature mismatch without altering rsa_sha validation over the raw SHA-1 digest (also keep manual client/server configuration behavior). No alert for provider errors. Implement additive WirePeer::receive_with_reply returning Result<Vec<WireAction>, ReceiveError> with typed WireError diagnostic and optional owned reply. Existing receive remains diagnostic-only with the same shared state processing, no changes to WireError Copy or WireAction variants. Adapter receive uses detailed API, emits original Diagnostic then one budget-checked Send (or adds OutboundTooLarge while preserving the original diagnostic), and frees closed slots via normal lifecycle. Reply is one standalone explicit-length null-cipher fatal alert at next clear write sequence (1 after ClientHello even after byte-identical retry), with checksum over exact final ServerHelloDone record including encoded length form. Abort, cancel retries, release provisional state, preserve verified cache lifetime. No key transport, acknowledgment, repeated alert or implicit fallback on rejection. Cover all reviewed tests, including precise byte oracle, omitted final ServerHelloDone length, provider branch without process-global switches, API/manual compatibility, delivered and dropped UDP alerts with capacity-one, inbound budget/lifecycle, and independent fixed wall/monotonic clocks for failed full fallback, same-ID resume and original cache expiry. Keep valid paths, TR-03 and G3 controls. Name new core scenarios certificate_alert. Use ordinary in-memory protocol fixtures and local regression tests. Keep code small, no protocol exploitation, peer reconnaissance, live simulator or network runs, new dependencies, or changes to Waves. Maintainer owns evidence and documentation.",
+  "paths": [
+    "src/wire.rs",
+    "src/wire/certificate.rs",
+    "src/wire/codec.rs",
+    "src/wire/certificate_alert_tests.rs",
+    "src/wire/alert_tests.rs",
+    "src/udp.rs",
+    "src/udp/certificate_alert_tests.rs",
+    "tests/provisioned_trust.rs",
+    "tests/udp_adapter.rs",
+    "tests/wire_resumption.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "certificate_alert"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "provisioned_trust"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "wire_resumption",
+      "--test",
+      "udp_adapter"
+    ]
+  ],
+  "timeoutSeconds": 900
+}

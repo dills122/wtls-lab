@@ -277,6 +277,87 @@ fn lost_server_flight_retries_at_exact_deadline_and_echoes_protected_data() {
     ));
 }
 
+#[test]
+fn lost_final_server_finished_flight_retries_and_echoes_protected_data() {
+    // WAP-199 §10.4. Drop the final server CCS/Finished datagram.
+    let (clients, servers) = contexts();
+    let mut client = adapter(None, 1);
+    let mut server = adapter(Some(servers), 1);
+    let mut link = Link::default();
+
+    link.send(client.connect(SERVER_ADDR, &clients, WALL, 100));
+    let hello = link.take(SERVER_ADDR);
+    link.send(server.receive(CLIENT_ADDR, &hello, WALL, 101));
+    let server_hello_flight = link.take(CLIENT_ADDR);
+    link.send(client.receive(SERVER_ADDR, &server_hello_flight, WALL, 102));
+    let client_commit = link.take(SERVER_ADDR);
+
+    let events = server.receive(CLIENT_ADDR, &client_commit, WALL, 103);
+    assert_eq!(events.len(), 2);
+    assert!(established(&events, CLIENT_ADDR, HandshakeKind::Full));
+    link.send(events);
+    let lost_flight = link.take(CLIENT_ADDR);
+    let records = decode_datagram(&lost_flight).unwrap();
+    let [ccs, finished] = records.as_slice() else {
+        panic!("expected CCS and protected Finished: {records:?}");
+    };
+    assert_eq!(ccs.content_type, RecordType::ChangeCipherSpec);
+    assert_eq!(ccs.cipher_spec, CipherSpec::Null);
+    assert_eq!(ccs.sequence, 3);
+    assert_eq!(ccs.fragment, &[1]);
+    assert_eq!(finished.content_type, RecordType::Handshake);
+    assert_eq!(finished.cipher_spec, CipherSpec::Current);
+    assert_eq!(finished.sequence, 0);
+    assert_eq!(server.status(CLIENT_ADDR), Some(Status::Open));
+    assert_eq!(client.status(SERVER_ADDR), Some(Status::Negotiating));
+
+    assert_eq!(client.deadline(), Some(112));
+    assert!(client.tick(111).is_empty());
+    let events = client.tick(112);
+    assert_eq!(events.len(), 1);
+    link.send(events);
+    let retried_commit = link.take(SERVER_ADDR);
+    assert_eq!(retried_commit, client_commit);
+
+    let events = server.receive(CLIENT_ADDR, &retried_commit, WALL, 113);
+    assert!(matches!(events.as_slice(), [Event::Send { .. }]));
+    link.send(events);
+    let repeated_flight = link.take(CLIENT_ADDR);
+    assert_eq!(repeated_flight, lost_flight);
+
+    let events = client.receive(SERVER_ADDR, &repeated_flight, WALL, 114);
+    assert!(matches!(
+        events.as_slice(),
+        [Event::Established { remote, kind: HandshakeKind::Full }] if *remote == SERVER_ADDR
+    ));
+    assert_eq!(client.status(SERVER_ADDR), Some(Status::Open));
+    assert_eq!(server.status(CLIENT_ADDR), Some(Status::Open));
+    assert_eq!(client.deadline(), None);
+
+    link.send(client.send_application(SERVER_ADDR, PAYLOAD.to_vec()));
+    let request = link.take(SERVER_ADDR);
+    let events = server.receive(CLIENT_ADDR, &request, WALL, 115);
+    let [Event::Deliver { remote, payload }] = events.as_slice() else {
+        panic!("expected authenticated request");
+    };
+    assert_eq!((*remote, payload.as_slice()), (CLIENT_ADDR, PAYLOAD));
+
+    link.send(server.send_application(*remote, payload.clone()));
+    let response = link.take(CLIENT_ADDR);
+    assert!(matches!(
+        client.receive(SERVER_ADDR, &response, WALL, 116).as_slice(),
+        [Event::Deliver { remote, payload }] if *remote == SERVER_ADDR && payload == PAYLOAD
+    ));
+    for datagram in [&request, &response] {
+        let records = decode_datagram(datagram).unwrap();
+        let [record] = records.as_slice() else {
+            panic!("expected one protected application record: {records:?}");
+        };
+        assert_eq!(record.content_type, RecordType::ApplicationData);
+        assert_eq!(record.cipher_spec, CipherSpec::Current);
+    }
+}
+
 fn session_id(datagram: &[u8]) -> Vec<u8> {
     let records = wtls_lab::decode_datagram(datagram).unwrap();
     match records[0].fragment[0] {

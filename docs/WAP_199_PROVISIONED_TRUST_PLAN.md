@@ -103,16 +103,13 @@ the existing locked offline Cargo test, Clippy, and formatting gates.
 
 ## Separate BlackBerry interop check
 
-The stock JDE 4.0 BlackBerry 7290 capture contains 28 advertised RSA
-type-254 authority hashes. The simulator accepted the temporary lab leaf
-after manual thumbprint comparison. That evidence establishes the handshake and
-protected WSP under the recorded manual trust method. The provisioned run needs
-its own capture showing the configured lab authority in ClientHello and
-protected WSP after a verified handshake. If the simulator's provisioning
-workflow remains unconfirmed, record its status as pending and retain the
-existing manual-trust run separately. The deterministic gate does not depend
-on the live run.
-[BlackBerry offer and trust evidence](../fixtures/HISTORICAL_PEERS.md#blackberry-authenticated-exchange-and-cached-id)
+WTLS-211 verified live native CA enrollment in the stock BlackBerry 7290
+simulator. After a separate CA trust action through the Browser's key store,
+the next ClientHello advertised the lab authority hash and the strict gateway
+completed a full handshake and protected WSP exchange. The Browser required
+no gateway leaf prompt. The deterministic WTLS-210 gate and the historical
+manual-trust run retain their own evidence.
+[Live enrollment capture](../fixtures/HISTORICAL_PEERS.md#blackberry-native-ca-enrollment)
 
 ## Approved decisions
 

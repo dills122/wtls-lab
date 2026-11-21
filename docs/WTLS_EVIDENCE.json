@@ -175,6 +175,21 @@
         "scope": "Exact Ruflo review and 99 Rust tests. Deterministic evidence covers the explicitly selected provisioned profile, RSA authority ID encoding, matching/empty/nonmatching offers, independent leaf validation, and resumption, including conflicting offers and cache-context changes.",
         "peerObservation": "The live provisioned BlackBerry check remains a separate milestone."
       }
+    },
+    {
+      "id": "WTLS-CL-BLACKBERRY-PROVISIONED-TRUST",
+      "workItem": "WTLS-211",
+      "status": "verified",
+      "source": "WAP-199 §§10.5.1.2 and 10.5.2 with WAP-199_104/_105 §3.3 and OMA WSP content type 0x18",
+      "statement": "After native CA enrollment the stock BlackBerry advertises the lab issuing authority and authenticates the WTLS-210 gateway leaf during a full handshake.",
+      "evidence": {
+        "testedCommit": "2d5c2913cf7ddcb62c8ffeea172132de80105a85",
+        "provenance": "fixtures/HISTORICAL_PEERS.md",
+        "fixture": "fixtures/blackberry-7290-provisioned-ca.trace",
+        "authorityModulusSha1": "445bd7006cd0d7c3c8ad017d31e450dc16932a83",
+        "captureSha256": "23d89a8da8efe99c052286a02edaa4b482eb20fc847acf86464faf9962627adc",
+        "scope": "Ruflo historical source review, filtered before-and-after capture, and matching protected WSP acknowledgment. CA trust was explicitly granted during enrollment. No leaf exception was used. Same simulator run."
+      }
     }
   ]
 }

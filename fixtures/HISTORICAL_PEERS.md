@@ -228,3 +228,45 @@ The [trace](blackberry-7290-udp-adapter.trace) contains 42 UDP payloads. Its SHA
 `4b0992f01d7645924c7542b6acddea5067d14475fb0e8f7c745a727c8496c36d`. The endpoint logged verified Finished messages and a matching
 protected WTP acknowledgment for the page's transaction ID at each stage.
 [WAP-199 §§10.2–10.4](https://www.wapforum.org/tech/documents/WAP-199-WTLS-20000218-a.pdf)
+
+## BlackBerry native CA enrollment
+
+WTLS-211 used the stock RIM JDE 4.0 BlackBerry 7290 simulator in an isolated
+Windows XP overlay. The device reported software `4.0.0.132` and platform
+`2.1.0.76`. Ruflo reviewed documented enrollment routes and recommended
+trying the Browser's native certificate content type first. The disposable
+endpoint used the WTLS-210 library from `2d5c291` with
+`ServerIdentity::provisioned`. Its lab wrapper generated a self-signed native
+WTLS root and a separately keyed leaf signed by that root. The leaf's issuer
+matched the root's subject, whose common name was `ca.lab.invalid` and whose
+WTLS name included `T=ca`.
+[RIM 7290 user guide](https://www.att.com/support_static_files/manuals/BlackBerry_7290.pdf) ·
+[WSP content type registry](https://www.openmobilealliance.org/omna/wsp/wsp_content_type_codes.html)
+
+1. The pre-enrollment ClientHello offered 28 authority entries and a prior
+   session ID absent from the fresh gateway cache. The lab authority was
+   absent. The strict gateway returned only a clear fatal
+   `handshake_failure`.
+2. In a separate local WAP session on UDP 9201, the Browser fetched the
+   public root as `application/vnd.wap.wtls-ca-certificate` (WSP `0x18`).
+   The captured response body matched the exact native CA bytes. The
+   operator created a disposable key store, chose to trust the named lab CA,
+   and granted the stock Browser key-store access. Device Options later listed
+   the root as **Explicitly Trusted**. Its displayed certificate thumbprint
+   matched the locally generated CA.
+3. The next request on UDP 9203 offered an empty session ID and 29 authority
+   entries, including exactly one RSA/default-parameter/type-254 entry for the
+   lab CA. The strict gateway sent its native leaf. ClientKeyExchange followed
+   the gateway's certificate flight within 0.470 seconds. The Browser
+   completed the full handshake with **Prompt For Server Trust** still set to
+   **Yes**, with no gateway leaf prompt or exception. The endpoint verified
+   the client's Finished and the matching protected WSP page acknowledgment.
+   The Browser rendered the protected page.
+
+The lab CA's RSA modulus SHA-1 was `445bd7006cd0d7c3c8ad017d31e450dc16932a83`. The native
+root certificate's SHA-256 was `677efc3872d00afa2ec92e9072e6ef7c53f3bb700a0839bbaf02afc66c99af9f`.
+The [13-datagram secure trace](blackberry-7290-provisioned-ca.trace) has SHA-256
+`2c09ffa78f743f612d65b3c2b4b9b798750977d9e5fc7f7590b52ab7fb8becdf`. The combined, port-filtered
+UDP 9201/9203 capture has SHA-256 `23d89a8da8efe99c052286a02edaa4b482eb20fc847acf86464faf9962627adc`.
+Evidence covers enrollment and the first full handshake in the same simulator
+run. Persistence across a simulator restart remains unverified.

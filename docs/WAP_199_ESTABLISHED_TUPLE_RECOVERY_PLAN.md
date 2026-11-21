@@ -6,7 +6,8 @@ protected traffic. Promotion requires verified client Finished and a
 final server flight within budget. A UDP tuple here is the remote
 address and port as seen by one adapter.
 [Support promise review](WAP_199_SUPPORT_PROMISE_REVIEW.md) ·
-[Current UDP routing](../src/udp.rs#L234)
+[Current UDP routing](../src/udp.rs#L237) ·
+[WTLS-224 abbreviated recovery](WAP_199_ABBREVIATED_TUPLE_RECOVERY_PLAN.md)
 
 ## Protocol and verified scope
 
@@ -64,8 +65,8 @@ existing verified-prefix boundary check for A, and leave its complete
 suffix on A's authentication and replay path. A pending candidate must
 pass its own commit checks before it can publish any establishment or
 delivery.
-[Wire flight matching](../src/wire.rs#L519) ·
-[Server commit handling](../src/handshake.rs#L621) ·
+[Wire flight matching](../src/wire.rs#L562) ·
+[Server commit handling](../src/handshake.rs#L628) ·
 [G3 alert policy](WAP_199_CLEAR_ALERT_PLAN.md#profile-behavior)
 
 ## Handover, timeout, and close behavior
@@ -77,7 +78,7 @@ uses this event to start state for the new connection. The selected
 profile authenticates the gateway to the client. A proved client
 Finished establishes key and transcript agreement for B. Application
 identity and state carry-forward require their own policy.
-[Server final flight and establishment](../src/handshake.rs#L642) ·
+[Server final flight and establishment](../src/handshake.rs#L649) ·
 [Application event handling](../src/bin/wtls-udp-lab.rs#L168)
 
 Promotion sends no Session close and preserves existing cache policy.
@@ -99,8 +100,8 @@ ends independently, preserve its normal close, timeout and cache
 effects. Cancel the staged attempt and allow a later fresh hello
 through ordinary admission. Record retired hello randoms under the
 existing bounded policy. These are local ownership rules.
-[Adapter scheduling](../src/udp.rs#L153) ·
-[Existing association retirement](../src/udp.rs#L466) ·
+[Adapter scheduling](../src/udp.rs#L156) ·
+[Existing association retirement](../src/udp.rs#L465) ·
 [Cache policy](WIRE_SESSION_RESUMPTION.md#cache-policy)
 
 At the public API, writes address the current association by tuple.
@@ -108,7 +109,7 @@ Once B is established, delayed application work submitted for that
 tuple uses B. Consumers reset tuple-bound state on `Established`. The
 lab responder already resets its application session there. Carrying
 application work across a handover needs an association-aware API.
-[Tuple-based send](../src/udp.rs#L454) ·
+[Tuple-based send](../src/udp.rs#L453) ·
 [Application reset](../src/bin/wtls-udp-lab.rs#L172)
 
 ## Deterministic tests
@@ -134,5 +135,5 @@ while rejecting B's larger full certificate flight.
 All 154 Rust tests, Clippy, formatting, and the exact-commit
 Ruflo review passed. The regression gate retains G3, G4, G6, terminal
 retirement, sequence exhaustion, and final-flight retry controls.
-[Established recovery tests](../tests/udp_adapter.rs#L1458) ·
+[Established recovery tests](../tests/udp_adapter.rs#L1448) ·
 [Supervised verification](SUPERVISED_WORKFLOW.md#run-the-wtls-loop)

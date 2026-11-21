@@ -1,6 +1,6 @@
 # WAP-199 same-tuple recovery with a cached session
 
-**WTLS-224 · Proposed after a read-only Ruflo review of `143ad2f`.**
+**WTLS-224 · Verified at `4f82c05`.**
 Extend WTLS-223 to cover a client that restarts with its resumable
 session and reuses its UDP address and port. The old connection stays
 available until the new one proves Finished and remains open. A session
@@ -47,9 +47,9 @@ the existing standalone clear-alert path. Ordinary incumbent traffic
 uses the incumbent's receive path. A selected peer authenticates the
 datagram under its own keys and a failed check ends processing for that
 datagram.
-[Current adapter routing](../src/udp.rs#L299) ·
-[Verified prefix matching](../src/wire.rs#L424) ·
-[Full and abbreviated Finished handling](../src/handshake.rs#L621)
+[Current adapter routing](../src/udp.rs#L302) ·
+[Verified prefix matching](../src/wire.rs#L446) ·
+[Full and abbreviated Finished handling](../src/handshake.rs#L628)
 
 ## Promotion and closure
 
@@ -60,7 +60,7 @@ recheck of the exact selected cache entry and its expiry through Finished
 verification. Resumption preserves the original expiry. Candidate
 rejection or timeout leaves incumbent traffic and eligible cache state
 intact.
-[Exact cache recheck](../src/wire.rs#L630) ·
+[Exact cache recheck](../src/wire.rs#L673) ·
 [Cache policy](WIRE_SESSION_RESUMPTION.md#cache-policy)
 
 - **Candidate opens.** Install that peer before publishing one
@@ -91,7 +91,7 @@ Leave mixed application-and-close suffixes and the association-aware
 application API outside this slice. Published application writes
 continue to address the currently installed peer by tuple.
 [WAP-199 §10.2.1](https://ptacts.uspto.gov/ptacts/public-informations/petitions/1549804/download-documents?artifactId=q91LjyqB9tLZ-LVakpTsgAE_GyThWnjP3JSk0xnVhQkx_FB33j7C-1I#page=44) ·
-[Existing wire close effects](../src/wire.rs#L1237)
+[Existing wire close effects](../src/wire.rs#L1293)
 
 ## Deterministic acceptance tests
 
@@ -117,3 +117,12 @@ continue to address the currently installed peer by tuple.
    resulting eligibility of a third peer's resume. Exercise a shared
    entry and a distinct entry to verify exact invalidation. Cover an
    incumbent close that arrives before the candidate's commit.
+
+## Verification
+
+The standalone promotion test failed on the baseline when the server
+sent no handshake flight. It passed with the implementation. The
+supervisor's offline Cargo gates passed 160 tests, Clippy and formatting.
+Ruflo reviewed the exact feature commit and ran selected test binaries
+in its read-only worktree.
+[UDP adapter tests](../tests/udp_adapter.rs#L1904) · [Evidence ledger](WTLS_EVIDENCE.json)

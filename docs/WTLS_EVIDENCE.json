@@ -462,9 +462,28 @@
     {
       "id": "WTLS-CL-ESTABLISHED-UDP-TUPLE-RESUMPTION",
       "workItem": "WTLS-224",
-      "status": "open",
+      "status": "verified",
       "source": "WAP-199-WTLS-20000218-a §§9.1, 9.2.3.1, 10.1–10.4, 10.5.1.2–10.5.1.3, 10.5.9, 11.1.4 and Appendix B.4",
-      "statement": "An eligible fresh session-bearing ClientHello can stage one replacement on an established inbound UDP tuple. A successful open promotes the new connection. A verified immediate candidate close preserves the incumbent and applies the close scope to cache eligibility."
+      "statement": "An eligible fresh session-bearing ClientHello can stage one replacement on an established inbound UDP tuple. A successful open promotes the new connection. A verified immediate candidate close preserves the incumbent and applies the close scope to cache eligibility.",
+      "evidence": {
+        "verifiedCommit": "4f82c05cb4c68de63090e39f753a9c13cc9b1374",
+        "claimId": "c62f5f42bb6f43fa827b33b40c385767",
+        "localReceipt": "ruflo-wtls-loop/c62f5f42bb6f43fa827b33b40c385767/receipt.json",
+        "design": "docs/WAP_199_ABBREVIATED_TUPLE_RECOVERY_PLAN.md",
+        "tests": [
+          "tests/udp_adapter.rs"
+        ],
+        "scenarios": [
+          "resumed_recovery_candidate_close_preserves_incumbent_and_applies_exact_scope",
+          "resumed_recovery_first_flight_budget_refusal_leaves_candidate_slot_free",
+          "resumed_recovery_fixed_deadline_expires_before_receive_and_tick",
+          "resumed_recovery_incumbent_prefixed_close_cancels_candidate",
+          "resumed_recovery_rechecks_cache_at_finished_and_falls_back_for_stale_id",
+          "resumed_recovery_routes_incumbent_prefix_and_promotes_on_first_application",
+          "resumed_recovery_standalone_commit_promotes_silently"
+        ],
+        "scope": "Exact Ruflo review and 160 Rust tests. An occupied inbound UDP tuple stages an eligible cached session and preserves incumbent traffic until the resumed candidate opens. A first prefixed close keeps the incumbent serving traffic and applies the requested cache scope."
+      }
     }
   ]
 }

@@ -331,6 +331,13 @@
         ],
         "scope": "Exact Ruflo review and 122 Rust tests. The supported clear receive path correlates alerts to a complete record from the pending attempt. Matched terminal errors retire that attempt, preserve eligible cache entries and honor the no_connection sequence exception. Rejection and advisory cases preserve sequence and retry state. Committed connections retain protected delivery. Outbound certificate alerts remain separate."
       }
+    },
+    {
+      "id": "WTLS-CL-PROTECTED-APPLICATION-RECORD-BATCH",
+      "workItem": "WTLS-220",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a §§9, 9.2.1, 9.2.3.1, 10.2–10.4, Appendix B.3, with WAP-199_103 rows S-026/C-026",
+      "statement": "The supported UDP profile accepts multiple independently protected application records per datagram in both roles, including an authenticated abbreviated client commit suffix. It preserves record boundaries, replay admission, close references, and terminal alert precedence."
     }
   ]
 }

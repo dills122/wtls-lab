@@ -1,0 +1,43 @@
+{
+  "workItem": "WTLS-220",
+  "clauses": [
+    "WTLS-CL-PROTECTED-APPLICATION-RECORD-BATCH"
+  ],
+  "objective": "Implement G4 exactly as reviewed in docs/WAP_199_APPLICATION_RECORD_BATCH_PLAN.md in standalone wtls-lab. Start with a deterministic test that fails against the current single-record receive guard, then implement and make it pass. Validate the full application batch's framing, message types, and integrity before any delivery or replay mutation. Emit one delivery per replay-admitted record in datagram order and keep the existing 32-record window, per-record key refresh and sequence limits. Accept correctly protected final omitted length and retain the existing explicit framing and UDP limit. Process multiple application records after initial verified abbreviated client CCS/Finished and after exact verified prefix retransmission. Keep one Established event before delivery, existing cache eligibility, rejection of cached lengthless Finished used with appended suffix, and duplicate-Finished warning with original Finished checksum. Invalid suffix is retryable and rejected before delivery or replay admission; a failing Finished retains existing terminal behavior. Advance the close checksum only to the exact framed record of the highest accepted protected sequence. An aggregate delivery alone cannot prove that a trailing record was accepted. An all-duplicate or rejected batch leaves that reference intact. Retain close, critical, fatal, clear alert, and generic warning behavior; preserve terminal alert priority over staged data, acknowledgments, and cache effects. Keep public API and transmit paths unchanged. General mixed content interleaving and full final-flight coalescing are out of scope. Follow every deterministic scenario in the reviewed plan. Use in-memory peers and existing normal fixture helpers. Name new scenarios with application_batch. Use test-only record construction where necessary, no external network, offensive work, simulator or Waves. Run targeted tests. Maintainer owns docs and evidence. No dependencies or unrelated changes.",
+  "paths": [
+    "src/handshake.rs",
+    "src/wire.rs",
+    "src/wire/alert_tests.rs",
+    "src/wire/application_batch_tests.rs",
+    "tests/handshake.rs",
+    "tests/wire_resumption.rs",
+    "tests/udp_adapter.rs",
+    "tests/protected_echo.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "application_batch"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "wire_resumption"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "udp_adapter"
+    ]
+  ],
+  "timeoutSeconds": 900
+}

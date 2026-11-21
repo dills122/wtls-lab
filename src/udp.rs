@@ -41,7 +41,7 @@ impl fmt::Display for Diagnostic {
             Self::AddressInUse => f.write_str("remote address already has an association"),
             Self::AtCapacity => f.write_str("association table is full"),
             Self::PreviousClientHello => {
-                f.write_str("ClientHello from a recently closed association")
+                f.write_str("ClientHello from a recently retired handshake")
             }
             Self::InboundTooLarge(error) => write!(f, "inbound {error}"),
             Self::OutboundTooLarge(error) => write!(f, "outbound {error}"),
@@ -88,10 +88,10 @@ struct Association {
 ///
 /// One capacity covers all live associations, including negotiations. A full
 /// table refuses new associations. An inbound handshake gets a fixed deadline
-/// from its first accepted ClientHello, even if its flight is repeated. Established
-/// and outbound peers follow WirePeer's lifecycle. The most recent `capacity`
-/// server-side (address, ClientHello random) pairs from closed or expired
-/// associations are kept in FIFO order to reject stale hellos. The shared
+/// from the slot's first accepted ClientHello, across retries and replacements.
+/// Established and outbound peers follow WirePeer's lifecycle. The most recent
+/// `capacity` server-side (address, ClientHello random) pairs from closed, expired,
+/// or displaced handshakes are kept in FIFO order to reject stale hellos. The shared
 /// server context handles resumption independently of this history.
 ///
 /// Supply certificate time as Unix seconds and timers as nondecreasing
@@ -223,41 +223,62 @@ impl Adapter {
         if let Err(error) = self.budget.check(bytes) {
             return diagnostic(remote, Diagnostic::InboundTooLarge(error));
         }
-        if self.associations.contains_key(&remote) {
-            return self.drive(remote, |peer| peer.receive(bytes, monotonic_ms));
+        let (client_random, replacement_deadline) = match self.associations.get(&remote) {
+            Some(entry) => {
+                if let (Some(current_random), Some(deadline)) =
+                    (entry.client_random, entry.pending_until_ms)
+                    && entry.peer.status() == Status::Negotiating
+                    && let Ok(random) = opening_random(bytes)
+                    && random != current_random
+                {
+                    (random, Some(deadline))
+                } else {
+                    // WirePeer distinguishes an exact replay from a conflicting
+                    // same-random hello and handles ordinary negotiation traffic.
+                    return self.drive(remote, |peer| peer.receive(bytes, monotonic_ms));
+                }
+            }
+            None => {
+                if self.server.is_none() {
+                    return diagnostic(remote, Diagnostic::NoAssociation);
+                }
+                match opening_random(bytes) {
+                    Ok(random) => (random, None),
+                    Err(error) => return diagnostic(remote, Diagnostic::Protocol(error)),
+                }
+            }
+        };
+        if self.retired_hellos.contains(&(remote, client_random)) {
+            return diagnostic(remote, Diagnostic::PreviousClientHello);
+        }
+        if replacement_deadline.is_none() && self.associations.len() == self.capacity {
+            return diagnostic(remote, Diagnostic::AtCapacity);
         }
 
         let Some(server) = &self.server else {
             return diagnostic(remote, Diagnostic::NoAssociation);
         };
-        let client_random = match opening_random(bytes) {
-            Ok(random) => random,
-            Err(error) => return diagnostic(remote, Diagnostic::Protocol(error)),
-        };
-        if self.retired_hellos.contains(&(remote, client_random)) {
-            return diagnostic(remote, Diagnostic::PreviousClientHello);
-        }
-        if self.associations.len() == self.capacity {
-            return diagnostic(remote, Diagnostic::AtCapacity);
-        }
-
         let mut peer = match server.peer(unix_seconds) {
             Ok(peer) => peer,
             Err(error) => return diagnostic(remote, Diagnostic::Protocol(error)),
         };
         let events = self.events(remote, peer.receive(bytes, monotonic_ms));
-        // A resumption-only miss may emit an alert while the peer stays Idle.
+        // An initial alert leaves the candidate idle. Admission requires a
+        // negotiating peer whose first flight passed the datagram budget.
         if has_send(&events) && peer.status() == Status::Negotiating {
-            self.associations.insert(
+            let displaced = self.associations.insert(
                 remote,
                 Association {
                     peer,
                     client_random: Some(client_random),
-                    pending_until_ms: Some(
-                        monotonic_ms.saturating_add(self.pending_handshake_timeout_ms.get()),
-                    ),
+                    pending_until_ms: Some(replacement_deadline.unwrap_or_else(|| {
+                        monotonic_ms.saturating_add(self.pending_handshake_timeout_ms.get())
+                    })),
                 },
             );
+            if let Some(random) = displaced.and_then(|entry| entry.client_random) {
+                self.remember_retired_hello(remote, random);
+            }
         }
         events
     }
@@ -317,11 +338,15 @@ impl Adapter {
             .remove(&remote)
             .and_then(|entry| entry.client_random)
         {
-            if self.retired_hellos.len() == self.capacity {
-                self.retired_hellos.pop_front();
-            }
-            self.retired_hellos.push_back((remote, random));
+            self.remember_retired_hello(remote, random);
         }
+    }
+
+    fn remember_retired_hello(&mut self, remote: SocketAddr, random: [u8; 16]) {
+        if self.retired_hellos.len() == self.capacity {
+            self.retired_hellos.pop_front();
+        }
+        self.retired_hellos.push_back((remote, random));
     }
 
     fn events(

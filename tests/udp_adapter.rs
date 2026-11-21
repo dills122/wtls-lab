@@ -19,6 +19,10 @@ const CLIENT_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCAL
 const SERVER_ADDR: SocketAddr = SocketAddr::V4(SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9203));
 
 fn contexts() -> (ResumableClient, ResumableServer) {
+    contexts_with_authority(false)
+}
+
+fn contexts_with_authority(require_authority: bool) -> (ResumableClient, ResumableServer) {
     let ca = Rsa::generate(2048).unwrap();
     let leaf = Rsa::generate(2048).unwrap();
     let leaf_public =
@@ -29,7 +33,11 @@ fn contexts() -> (ResumableClient, ResumableServer) {
             .unwrap();
     let certificate =
         issue_certificate(ISSUER, SUBJECT, (WALL - 1)..=(WALL + 1), &ca, &leaf_public).unwrap();
-    let identity = ServerIdentity::new(certificate, leaf).unwrap();
+    let identity = if require_authority {
+        ServerIdentity::provisioned(certificate, leaf, ISSUER, ca_public.clone()).unwrap()
+    } else {
+        ServerIdentity::new(certificate, leaf).unwrap()
+    };
     let trust = TrustAnchor::new(ISSUER, SUBJECT, ca_public).unwrap();
     let lifetime = NonZeroU64::new(1_000).unwrap();
     (
@@ -330,6 +338,298 @@ fn protected_udp_loss_of_first_refreshed_record_does_not_block_delivery() {
     }
 }
 
+fn assert_protected_echo(link: &mut Link, client: &mut Adapter, server: &mut Adapter, now: u64) {
+    link.send(client.send_application(SERVER_ADDR, PAYLOAD.to_vec()));
+    let request = link.take(SERVER_ADDR);
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, &request, WALL, now).as_slice(),
+        [Event::Deliver { remote, payload }] if *remote == CLIENT_ADDR && payload == PAYLOAD
+    ));
+    link.send(server.send_application(CLIENT_ADDR, PAYLOAD.to_vec()));
+    let response = link.take(CLIENT_ADDR);
+    assert!(matches!(
+        client.receive(SERVER_ADDR, &response, WALL, now + 1).as_slice(),
+        [Event::Deliver { remote, payload }] if *remote == SERVER_ADDR && payload == PAYLOAD
+    ));
+}
+
+#[test]
+fn pending_client_hello_replaces_full_handshake_at_capacity() {
+    let (clients, servers) = contexts();
+    let mut a = adapter(None, 1);
+    let mut b = adapter(None, 1);
+    let mut server = adapter(Some(servers), 1);
+    let mut link = Link::default();
+
+    link.send(a.connect(SERVER_ADDR, &clients, WALL - 1, 100));
+    let hello_a = link.take(SERVER_ADDR);
+    assert!(assert_client_hello_time(&hello_a, WALL - 1).is_empty());
+    link.send(server.receive(CLIENT_ADDR, &hello_a, WALL, 101));
+    let flight_a = link.take(CLIENT_ADDR);
+    let deadline = server.deadline();
+    link.send(server.receive(CLIENT_ADDR, &hello_a, WALL, 102));
+    assert_eq!(link.take(CLIENT_ADDR), flight_a);
+    link.send(a.receive(SERVER_ADDR, &flight_a, WALL - 1, 103));
+    let commit_a = link.take(SERVER_ADDR);
+
+    link.send(b.connect(SERVER_ADDR, &clients, WALL + 1, 103));
+    let hello_b = link.take(SERVER_ADDR);
+    assert!(assert_client_hello_time(&hello_b, WALL + 1).is_empty());
+    let events = server.receive(CLIENT_ADDR, &hello_b, WALL + 1, 104);
+    assert!(
+        matches!(events.as_slice(), [Event::Send { remote, .. }] if *remote == CLIENT_ADDR),
+        "fresh B must start a handshake in the occupied slot"
+    );
+    link.send(events);
+    let flight_b = link.take(CLIENT_ADDR);
+    assert_server_hello_time(&flight_b, WALL + 1);
+    assert_eq!(server.status(CLIENT_ADDR), Some(Status::Negotiating));
+    assert_eq!(server.deadline(), deadline);
+    link.send(server.receive(CLIENT_ADDR, &hello_b, WALL + 1, 105));
+    assert_eq!(link.take(CLIENT_ADDR), flight_b);
+
+    let other_addr = SocketAddr::new(CLIENT_ADDR.ip(), CLIENT_ADDR.port() + 1);
+    let mut c = adapter(None, 1);
+    link.send(c.connect(SERVER_ADDR, &clients, WALL, 106));
+    let hello_c = link.take(SERVER_ADDR);
+    assert!(matches!(
+        server.receive(other_addr, &hello_c, WALL, 106).as_slice(),
+        [Event::Diagnostic { remote, reason: Diagnostic::AtCapacity }] if *remote == other_addr
+    ));
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, &hello_a, WALL, 107).as_slice(),
+        [Event::Diagnostic { remote, reason: Diagnostic::PreviousClientHello }] if *remote == CLIENT_ADDR
+    ));
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, &commit_a, WALL, 108).as_slice(),
+        [Event::Diagnostic {
+            reason: Diagnostic::Protocol(_),
+            ..
+        }]
+    ));
+    assert_eq!(server.status(CLIENT_ADDR), Some(Status::Negotiating));
+    assert_eq!(server.deadline(), deadline);
+    link.send(server.receive(CLIENT_ADDR, &hello_b, WALL + 1, 109));
+    assert_eq!(link.take(CLIENT_ADDR), flight_b);
+
+    link.send(b.receive(SERVER_ADDR, &flight_b, WALL + 1, 110));
+    let commit_b = link.take(SERVER_ADDR);
+    let events = server.receive(CLIENT_ADDR, &commit_b, WALL, 111);
+    assert!(established(&events, CLIENT_ADDR, HandshakeKind::Full));
+    link.send(events);
+    let finished = link.take(CLIENT_ADDR);
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, &commit_b, WALL, 112).as_slice(),
+        [Event::Send { remote, bytes }] if *remote == CLIENT_ADDR && *bytes == finished
+    ));
+    assert!(established(
+        &b.receive(SERVER_ADDR, &finished, WALL, 113),
+        SERVER_ADDR,
+        HandshakeKind::Full
+    ));
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, &hello_c, WALL, 114).as_slice(),
+        [Event::Diagnostic { remote, reason: Diagnostic::Protocol(_) }] if *remote == CLIENT_ADDR
+    ));
+    assert_eq!(server.status(CLIENT_ADDR), Some(Status::Open));
+    assert_eq!(server.deadline(), None);
+    assert_protected_echo(&mut link, &mut b, &mut server, 115);
+}
+
+#[test]
+fn pending_client_hello_rejects_candidates_and_keeps_original_flight() {
+    let (clients, servers) = contexts_with_authority(true);
+    let mut a = adapter(None, 1);
+    let mut b = adapter(None, 1);
+    let mut server = adapter(Some(servers), 1);
+    let mut link = Link::default();
+
+    link.send(a.connect(SERVER_ADDR, &clients, WALL - 1, 100));
+    let hello_a = link.take(SERVER_ADDR);
+    link.send(server.receive(CLIENT_ADDR, &hello_a, WALL, 101));
+    let flight_a = link.take(CLIENT_ADDR);
+    let deadline = server.deadline();
+
+    let unrelated = Rsa::generate(2048).unwrap();
+    let unrelated = Rsa::from_public_components(
+        unrelated.n().to_owned().unwrap(),
+        unrelated.e().to_owned().unwrap(),
+    )
+    .unwrap();
+    let foreign_clients = ResumableClient::provisioned(
+        RetryPolicy {
+            timeout_ms: NonZeroU64::new(10).unwrap(),
+            max_retries: 2,
+        },
+        TrustAnchor::new(ISSUER, SUBJECT, unrelated).unwrap(),
+        NonZeroU64::new(1_000).unwrap(),
+    );
+    link.send(b.connect(SERVER_ADDR, &foreign_clients, WALL + 1, 102));
+    let hello_b = link.take(SERVER_ADDR);
+    assert!(assert_client_hello_time(&hello_b, WALL + 1).is_empty());
+
+    // A truncated fresh offer and a validly framed change to A's key refresh.
+    let mut conflict = hello_a.clone();
+    *conflict.last_mut().unwrap() ^= 1;
+    assert_client_hello_time(&conflict, WALL - 1);
+    for (at, rejected) in [(103, &hello_b[..hello_b.len() - 1]), (104, &conflict[..])] {
+        assert!(matches!(
+            server.receive(CLIENT_ADDR, rejected, WALL, at).as_slice(),
+            [Event::Diagnostic {
+                reason: Diagnostic::Protocol(_),
+                ..
+            }]
+        ));
+        assert_eq!(server.status(CLIENT_ADDR), Some(Status::Negotiating));
+        assert_eq!(server.deadline(), deadline);
+    }
+
+    // The provisioned server sends a clear alert for B's unrelated authority.
+    link.send(server.receive(CLIENT_ADDR, &hello_b, WALL, 105));
+    let alert = link.take(CLIENT_ADDR);
+    let records = decode_datagram(&alert).unwrap();
+    assert!(matches!(records.as_slice(), [record]
+        if record.content_type == RecordType::Alert && record.cipher_spec == CipherSpec::Null));
+    assert_eq!(server.status(CLIENT_ADDR), Some(Status::Negotiating));
+    assert_eq!(server.deadline(), deadline);
+
+    link.send(server.receive(CLIENT_ADDR, &hello_a, WALL, 106));
+    assert_eq!(link.take(CLIENT_ADDR), flight_a);
+    link.send(a.receive(SERVER_ADDR, &flight_a, WALL, 107));
+    let commit_a = link.take(SERVER_ADDR);
+    let events = server.receive(CLIENT_ADDR, &commit_a, WALL, 108);
+    assert!(established(&events, CLIENT_ADDR, HandshakeKind::Full));
+}
+
+#[test]
+fn pending_client_hello_replacement_expires_at_original_deadline() {
+    let (clients, servers) = contexts();
+    let mut a = adapter(None, 1);
+    let mut b = adapter(None, 1);
+    let mut c = adapter(None, 1);
+    let mut server =
+        adapter(Some(servers), 1).with_pending_handshake_timeout_ms(NonZeroU64::new(10).unwrap());
+    let mut link = Link::default();
+
+    link.send(a.connect(SERVER_ADDR, &clients, WALL - 1, 99));
+    let hello_a = link.take(SERVER_ADDR);
+    link.send(server.receive(CLIENT_ADDR, &hello_a, WALL, 100));
+    let flight_a = link.take(CLIENT_ADDR);
+    link.send(server.receive(CLIENT_ADDR, &hello_a, WALL, 108));
+    assert_eq!(link.take(CLIENT_ADDR), flight_a);
+    assert_eq!(server.deadline(), Some(110));
+
+    link.send(b.connect(SERVER_ADDR, &clients, WALL + 1, 109));
+    let hello_b = link.take(SERVER_ADDR);
+    link.send(server.receive(CLIENT_ADDR, &hello_b, WALL + 1, 109));
+    let flight_b = link.take(CLIENT_ADDR);
+    assert_server_hello_time(&flight_b, WALL + 1);
+    assert_eq!(server.deadline(), Some(110));
+    assert!(server.tick(109).is_empty());
+
+    let other_addr = SocketAddr::new(CLIENT_ADDR.ip(), CLIENT_ADDR.port() + 1);
+    link.send(c.connect(SERVER_ADDR, &clients, WALL, 110));
+    let hello_c = link.take(SERVER_ADDR);
+    assert!(matches!(
+        server.receive(other_addr, &hello_c, WALL, 110).as_slice(),
+        [Event::TimedOut { remote: expired }, Event::Send { remote: admitted, .. }]
+            if *expired == CLIENT_ADDR && *admitted == other_addr
+    ));
+    assert_eq!(server.status(CLIENT_ADDR), None);
+    assert_eq!(server.status(other_addr), Some(Status::Negotiating));
+    assert_eq!(server.deadline(), Some(120));
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, &hello_b, WALL, 110).as_slice(),
+        [Event::Diagnostic {
+            reason: Diagnostic::PreviousClientHello,
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn pending_client_hello_replaces_abbreviated_handshake_for_same_session() {
+    let (clients, servers) = contexts();
+    let mut a = adapter(None, 1);
+    let mut b = adapter(None, 1);
+    let mut server = adapter(Some(servers), 1);
+    let mut link = Link::default();
+    let session = full_handshake_with_hello_times(&mut link, &mut a, &mut server, &clients);
+
+    link.send(server.close(CLIENT_ADDR, CloseScope::Connection));
+    let close = link.take(CLIENT_ADDR);
+    link.send(a.receive(SERVER_ADDR, &close, WALL, 105));
+    let reply = link.take(SERVER_ADDR);
+    server.receive(CLIENT_ADDR, &reply, WALL, 106);
+    assert_eq!(a.status(SERVER_ADDR), None);
+    assert_eq!(server.status(CLIENT_ADDR), None);
+
+    link.send(a.connect(SERVER_ADDR, &clients, WALL - 1, 107));
+    let hello_a = link.take(SERVER_ADDR);
+    assert_eq!(assert_client_hello_time(&hello_a, WALL - 1), session);
+    link.send(server.receive(CLIENT_ADDR, &hello_a, WALL, 108));
+    let flight_a = link.take(CLIENT_ADDR);
+    assert_eq!(assert_server_hello_time(&flight_a, WALL), session);
+    let events = a.receive(SERVER_ADDR, &flight_a, WALL, 109);
+    assert!(established(&events, SERVER_ADDR, HandshakeKind::Resumed));
+    link.send(events);
+    let commit_a = link.take(SERVER_ADDR);
+
+    link.send(b.connect(SERVER_ADDR, &clients, WALL + 1, 110));
+    let hello_b = link.take(SERVER_ADDR);
+    assert_eq!(assert_client_hello_time(&hello_b, WALL + 1), session);
+    link.send(server.receive(CLIENT_ADDR, &hello_b, WALL + 1, 111));
+    let flight_b = link.take(CLIENT_ADDR);
+    assert_eq!(assert_server_hello_time(&flight_b, WALL + 1), session);
+    let records = decode_datagram(&flight_b).unwrap();
+    let [hello, ccs, finished] = records.as_slice() else {
+        panic!("expected an abbreviated ServerHello, CCS and Finished flight");
+    };
+    assert_eq!(hello.content_type, RecordType::Handshake);
+    assert_eq!(ccs.content_type, RecordType::ChangeCipherSpec);
+    assert_eq!(finished.content_type, RecordType::Handshake);
+    assert_eq!(finished.cipher_spec, CipherSpec::Current);
+
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, &commit_a, WALL, 112).as_slice(),
+        [Event::Diagnostic {
+            reason: Diagnostic::Protocol(_),
+            ..
+        }]
+    ));
+    assert_eq!(server.status(CLIENT_ADDR), Some(Status::Negotiating));
+    link.send(server.receive(CLIENT_ADDR, &hello_b, WALL, 113));
+    assert_eq!(link.take(CLIENT_ADDR), flight_b);
+    let events = b.receive(SERVER_ADDR, &flight_b, WALL, 114);
+    assert!(established(&events, SERVER_ADDR, HandshakeKind::Resumed));
+    link.send(events);
+    let commit_b = link.take(SERVER_ADDR);
+    let events = server.receive(CLIENT_ADDR, &commit_b, WALL, 115);
+    assert!(established(&events, CLIENT_ADDR, HandshakeKind::Resumed));
+    let events = server.receive(CLIENT_ADDR, &commit_b, WALL, 116);
+    assert!(matches!(events.as_slice(), [Event::Send { remote, .. }] if *remote == CLIENT_ADDR));
+    link.send(events);
+    let confirmation = link.take(CLIENT_ADDR);
+    assert!(b.receive(SERVER_ADDR, &confirmation, WALL, 117).is_empty());
+    assert_eq!(b.status(SERVER_ADDR), Some(Status::Open));
+    assert_protected_echo(&mut link, &mut b, &mut server, 118);
+
+    link.send(server.close(CLIENT_ADDR, CloseScope::Connection));
+    let close = link.take(CLIENT_ADDR);
+    link.send(b.receive(SERVER_ADDR, &close, WALL, 120));
+    let reply = link.take(SERVER_ADDR);
+    server.receive(CLIENT_ADDR, &reply, WALL, 121);
+
+    // The server seeded the cache at 103. The client still offers that ID
+    // when the server reaches its original expiration at 103 + 1,000.
+    link.send(b.connect(SERVER_ADDR, &clients, WALL, 1102));
+    let hello = link.take(SERVER_ADDR);
+    assert_eq!(assert_client_hello_time(&hello, WALL), session);
+    link.send(server.receive(CLIENT_ADDR, &hello, WALL, 1103));
+    let fallback = link.take(CLIENT_ADDR);
+    assert_ne!(assert_server_hello_time(&fallback, WALL), session);
+}
+
 #[test]
 fn lost_server_flight_retries_at_exact_deadline_and_echoes_protected_data() {
     // WAP-199 §§9.2.3.1 and 10.4. Drop the normal ServerHello flight.
@@ -507,11 +807,6 @@ fn admission_routing_and_close_scope_control_reconnects() {
         server.receive(other_addr, &other_hello, WALL, 13).as_slice(),
         [Event::Diagnostic { remote, reason: Diagnostic::AtCapacity }] if *remote == other_addr
     ));
-    assert!(matches!(
-        server.receive(client_addr, &other_hello, WALL, 13).as_slice(),
-        [Event::Diagnostic { remote, reason: Diagnostic::Protocol(_) }] if *remote == client_addr
-    ));
-
     link.send(client.receive(server_addr, &flight, WALL, 14));
     let commit = link.take(server_addr);
     let events = server.receive(client_addr, &commit, WALL, 15);
@@ -522,6 +817,10 @@ fn admission_routing_and_close_scope_control_reconnects() {
         &client.receive(server_addr, &commit, WALL, 16),
         server_addr,
         HandshakeKind::Full
+    ));
+    assert!(matches!(
+        server.receive(client_addr, &other_hello, WALL, 16).as_slice(),
+        [Event::Diagnostic { remote, reason: Diagnostic::Protocol(_) }] if *remote == client_addr
     ));
 
     link.send(client.send_application(server_addr, PAYLOAD.to_vec()));

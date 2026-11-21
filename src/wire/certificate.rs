@@ -67,11 +67,8 @@ impl TrustAnchor {
         {
             return Err(BadCertificate);
         }
-        if leaf.exponent.len() > 4 {
-            return Err(Local);
-        }
         let bits = (leaf.modulus.len() - 1) * 8 + (8 - leaf.modulus[0].leading_zeros() as usize);
-        if !(1024..=4096).contains(&bits) {
+        if !(1024..=4096).contains(&bits) || leaf.exponent.len() > 4 {
             return Err(UnsupportedCertificate);
         }
         let key = leaf.public_key().map_err(|_| Local)?;

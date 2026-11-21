@@ -763,20 +763,25 @@ fn certificate_alert_classifies_native_leaves_in_order() {
     let mut invalid_signature = valid.clone();
     let signature_offset = valid.len() - ca.size() as usize;
     invalid_signature[signature_offset..].fill(0);
-    let short_rsa = Rsa::generate(768).unwrap();
-    // issue_certificate enforces the offer profile. Rebuild the modulus and sign
-    // the new certificate body to represent a complete smaller native RSA leaf.
-    let mut short_leaf = valid[..start_offset + 8 + 4 + SUBJECT.len() + 2].to_vec();
-    short_leaf.extend(vector(&short_rsa.e().to_vec()));
-    short_leaf.extend(vector(&short_rsa.n().to_vec()));
-    let mut signature = vec![0; ca.size() as usize];
-    ca.private_encrypt(
-        &sha1(&short_leaf),
-        &mut signature,
-        openssl::rsa::Padding::PKCS1,
-    )
-    .unwrap();
-    short_leaf.extend(vector(&signature));
+    // issue_certificate enforces the offer profile. Build complete native
+    // leaves for valid RSA keys outside either supported public-key limit.
+    let signed_leaf_for = |key: &Rsa<Private>| {
+        let mut certificate = valid[..start_offset + 8 + 4 + SUBJECT.len() + 2].to_vec();
+        certificate.extend(vector(&key.e().to_vec()));
+        certificate.extend(vector(&key.n().to_vec()));
+        let mut signature = vec![0; ca.size() as usize];
+        ca.private_encrypt(
+            &sha1(&certificate),
+            &mut signature,
+            openssl::rsa::Padding::PKCS1,
+        )
+        .unwrap();
+        certificate.extend(vector(&signature));
+        certificate
+    };
+    let short_leaf = signed_leaf_for(&Rsa::generate(768).unwrap());
+    let wide_exponent = BigNum::from_slice(&[1, 0, 0, 0, 1]).unwrap();
+    let wide_exponent_leaf = signed_leaf_for(&Rsa::generate_with_e(1024, &wide_exponent).unwrap());
 
     let clients = ResumableClient::provisioned(RETRY, trust(ca), TTL);
     let servers = server_context(server_identity(ca, SUBJECT));
@@ -784,6 +789,11 @@ fn certificate_alert_classifies_native_leaves_in_order() {
         ("truncated supported body", vec![1, 2, 1], 42),
         ("reversed dates", invalid_interval, 42),
         ("complete RSA leaf below the modulus limit", short_leaf, 43),
+        (
+            "complete RSA leaf above the exponent limit",
+            wide_exponent_leaf,
+            43,
+        ),
         (
             "issuer before signature",
             leaf(other_ca, "unknown CA", SUBJECT, VALID),

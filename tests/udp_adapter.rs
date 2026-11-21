@@ -3,11 +3,11 @@ use std::net::{Ipv4Addr, SocketAddr, SocketAddrV4};
 use std::num::{NonZeroU64, NonZeroUsize};
 
 use openssl::rsa::Rsa;
-use wtls_lab::handshake::{HandshakeKind, RetryPolicy, Status};
+use wtls_lab::handshake::{CloseScope, HandshakeKind, RetryPolicy, Status};
 use wtls_lab::udp::{Adapter, Diagnostic, Event};
 use wtls_lab::wire::{
     DatagramBudget, ResumableClient, ResumableServer, ServerIdentity, TrustAnchor,
-    decode_server_hello, issue_certificate,
+    decode_client_hello, decode_server_hello, issue_certificate,
 };
 use wtls_lab::{CipherSpec, RecordType, decode_datagram};
 
@@ -80,6 +80,109 @@ fn established(events: &[Event], expected: SocketAddr, kind: HandshakeKind) -> b
         matches!(event, Event::Established { remote, kind: actual }
             if *remote == expected && *actual == kind)
     })
+}
+
+fn assert_client_hello_time(datagram: &[u8], unix_seconds: u32) -> &[u8] {
+    let records = decode_datagram(datagram).unwrap();
+    let [record] = records.as_slice() else {
+        panic!("expected one ClientHello record: {records:?}");
+    };
+    assert_eq!(record.content_type, RecordType::Handshake);
+    assert_eq!(record.cipher_spec, CipherSpec::Null);
+    let hello = decode_client_hello(record.fragment).unwrap();
+    assert_eq!(
+        hello.random[..4],
+        unix_seconds.to_be_bytes(),
+        "ClientHello Random time prefix"
+    );
+    hello.session_id
+}
+
+fn assert_server_hello_time(datagram: &[u8], unix_seconds: u32) -> &[u8] {
+    let records = decode_datagram(datagram).unwrap();
+    let record = records.first().expect("expected a ServerHello record");
+    assert_eq!(record.content_type, RecordType::Handshake);
+    assert_eq!(record.cipher_spec, CipherSpec::Null);
+    let hello = decode_server_hello(record.fragment).unwrap();
+    assert_eq!(
+        hello.random[..4],
+        unix_seconds.to_be_bytes(),
+        "ServerHello Random time prefix"
+    );
+    hello.session_id
+}
+
+fn full_handshake_with_hello_times(
+    link: &mut Link,
+    client: &mut Adapter,
+    server: &mut Adapter,
+    clients: &ResumableClient,
+) -> [u8; 8] {
+    let client_wall = WALL - 1;
+    let server_wall = WALL;
+    link.send(client.connect(SERVER_ADDR, clients, client_wall, 100));
+    let hello = link.take(SERVER_ADDR);
+    assert!(assert_client_hello_time(&hello, client_wall).is_empty());
+
+    link.send(server.receive(CLIENT_ADDR, &hello, server_wall, 101));
+    let flight = link.take(CLIENT_ADDR);
+    let session = assert_server_hello_time(&flight, server_wall)
+        .try_into()
+        .expect("expected an eight-byte session ID");
+
+    link.send(client.receive(SERVER_ADDR, &flight, client_wall, 102));
+    let commit = link.take(SERVER_ADDR);
+    let events = server.receive(CLIENT_ADDR, &commit, server_wall, 103);
+    assert!(established(&events, CLIENT_ADDR, HandshakeKind::Full));
+    link.send(events);
+    let commit = link.take(CLIENT_ADDR);
+    let events = client.receive(SERVER_ADDR, &commit, client_wall, 104);
+    assert!(established(&events, SERVER_ADDR, HandshakeKind::Full));
+    session
+}
+
+#[test]
+fn full_handshake_hellos_encode_supplied_unix_time() {
+    let (clients, servers) = contexts();
+    let mut client = adapter(None, 1);
+    let mut server = adapter(Some(servers), 1);
+    let mut link = Link::default();
+
+    full_handshake_with_hello_times(&mut link, &mut client, &mut server, &clients);
+}
+
+#[test]
+fn resumed_handshake_hellos_encode_supplied_unix_time() {
+    let (clients, servers) = contexts();
+    let mut client = adapter(None, 1);
+    let mut server = adapter(Some(servers), 1);
+    let mut link = Link::default();
+    let session = full_handshake_with_hello_times(&mut link, &mut client, &mut server, &clients);
+
+    link.send(server.close(CLIENT_ADDR, CloseScope::Connection));
+    let notify = link.take(CLIENT_ADDR);
+    link.send(client.receive(SERVER_ADDR, &notify, WALL - 1, 105));
+    let reply = link.take(SERVER_ADDR);
+    server.receive(CLIENT_ADDR, &reply, WALL, 106);
+    assert_eq!(client.status(SERVER_ADDR), None);
+    assert_eq!(server.status(CLIENT_ADDR), None);
+
+    let client_wall = WALL;
+    let server_wall = WALL + 1;
+    link.send(client.connect(SERVER_ADDR, &clients, client_wall, 107));
+    let hello = link.take(SERVER_ADDR);
+    assert_eq!(assert_client_hello_time(&hello, client_wall), session);
+
+    link.send(server.receive(CLIENT_ADDR, &hello, server_wall, 108));
+    let flight = link.take(CLIENT_ADDR);
+    assert_eq!(assert_server_hello_time(&flight, server_wall), session);
+
+    let events = client.receive(SERVER_ADDR, &flight, client_wall, 109);
+    assert!(established(&events, SERVER_ADDR, HandshakeKind::Resumed));
+    link.send(events);
+    let commit = link.take(SERVER_ADDR);
+    let events = server.receive(CLIENT_ADDR, &commit, server_wall, 110);
+    assert!(established(&events, CLIENT_ADDR, HandshakeKind::Resumed));
 }
 
 fn open_protected_association(link: &mut Link) -> (Adapter, Adapter) {
@@ -375,8 +478,6 @@ fn session_id(datagram: &[u8]) -> Vec<u8> {
 
 #[test]
 fn admission_routing_and_close_scope_control_reconnects() {
-    use wtls_lab::handshake::CloseScope;
-
     let (clients, servers) = contexts();
     let client_addr = "127.0.0.1:49152".parse().unwrap();
     let other_addr = "127.0.0.1:49153".parse().unwrap();

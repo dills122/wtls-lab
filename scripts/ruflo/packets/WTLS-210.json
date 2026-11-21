@@ -1,0 +1,44 @@
+{
+  "workItem": "WTLS-210",
+  "clauses": [
+    "WTLS-CL-PROVISIONED-TRUST"
+  ],
+  "objective": "Implement the approved standalone wtls-lab provisioned native RSA WTLS profile and all six deterministic tests from docs/WAP_199_PROVISIONED_TRUST_PLAN.md. WAP-199 \u00a7\u00a710.2.2, 10.5.1.2, 10.5.2, 11.1.4 and SIN _104/_105 define the wire scope. Use an explicit provisioned client/server profile with one authority and one gateway leaf. Preserve existing public constructors, fixed codec entry points, nonprovisioned BlackBerry/manual path and opt-in legacy WinWAP. Ensure constructors also work through resumable contexts and the UDP adapter's existing context entry points. Reuse the existing native leaf verification and IO-free state machine. Server provisioning binds leaf and key to a configured authority public key, checks issuer and signature before use, and computes the authority ID from raw unsigned RSA modulus bytes. Client advertises one default-parameter RSA type-254 CA hash from the same TrustAnchor used for validation. Keep the key-exchange and trusted-authority vectors distinct, preserve exact emitted/received ClientHello transcript bytes and byte-identical retries. On a full offer match any supported compatible authority entry. With an empty list and usable authenticated RSA offer allow the configured leaf. A nonempty unmatched list sends an initial clear fatal handshake_failure correlated to the ClientHello before ServerHello, cache allocation or certificate; no anonymous fallback. Independently verify leaf signature, issuer/subject and validity on client before key transport. Offer-based selection must not equate a leaf or key-exchange ID with an authority. On valid cache hit allow omitted authority list, but decline an explicitly nonmatching list without evicting the usable entry. Maintain context isolation across trust/identity/policy changes, stale IDs and cache miss full policy. Resume-only miss uses current unknown_key_id behavior. Tests first: TRUST-01 known-answer unsigned vs DER sign padding and wire vector, TRUST-02 matched/nonfirst authority, authenticated Finished and protected echo, TRUST-03 wrong/leaf/misplaced authority with alert-only rejection and no cache, TRUST-04 empty-list success with actual client validation, TRUST-05 wrong provisioning, wrong signer, subject and expiration, TRUST-06 valid resume, omitted vectors, mismatch preservation, changed contexts, fallback and resume-only miss. Use valid locally generated RSA test keys and existing wire fixtures, offline Rust only. Keep new test target tests/provisioned_trust.rs for public external behavior; a small private unit fixture is acceptable. Start focused tests before behavior changes and record red/green and coverage per TRUST ID. No new dependencies, generalized PKI, broad cleanup, altered legacy behavior or live peers. Stay in claimed wtls-lab worktree. The lead will reconcile docs/evidence.",
+  "paths": [
+    "src/wire.rs",
+    "src/wire/certificate.rs",
+    "src/wire/codec.rs",
+    "src/wire/session.rs",
+    "src/wire/protection.rs",
+    "tests/provisioned_trust.rs",
+    "tests/protected_echo.rs",
+    "tests/wire_resumption.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "provisioned_trust"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "protected_echo"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "wire_resumption"
+    ]
+  ],
+  "timeoutSeconds": 1200
+}

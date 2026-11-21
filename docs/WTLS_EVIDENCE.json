@@ -151,6 +151,13 @@
         ],
         "scope": "Exact Ruflo review and 93 Rust tests. The deterministic adapter tests use locally generated authenticated traffic to verify delivery across a refresh boundary under loss, duplication and reordering. Application retransmission remains an upper-layer responsibility. The existing production path passed these cases without a protocol change."
       }
+    },
+    {
+      "id": "WTLS-CL-PROVISIONED-TRUST",
+      "workItem": "WTLS-210",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a, §§10.2.2, 10.5.1.2, 10.5.2 and 11.1.4, with WAP-199_104 and WAP-199_105 §3.3",
+      "statement": "In the opt-in authenticated profile, a gateway certificate is verified against its provisioned issuing authority and selected against the offered authority list. The RSA authority identifier hashes raw unsigned modulus bytes. The client verifies the native leaf independently. Cache resumption preserves the approved same-trust-context and conflicting-list rules."
     }
   ]
 }

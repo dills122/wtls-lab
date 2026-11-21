@@ -1,0 +1,50 @@
+{
+  "workItem": "WTLS-222",
+  "clauses": [
+    "WTLS-CL-FULL-SELECTION-HANDSHAKE-FAILURE"
+  ],
+  "objective": "Implement the approved docs/WAP_199_ALGORITHM_MISMATCH_ALERT_PLAN.md in standalone wtls-lab. Begin with a deterministic red regression using an ordinary well-framed ClientHello offering a different cipher/MAC pair. Handle one complete clear opening ClientHello at explicit record sequence zero, with either record length form. Malformed framing/envelopes/identifiers and UDP gates keep local handling. On authenticated server admission check version 1, explicit sequencing proposal, and offered NULL compression before cache lookup or any initial alert. Keep key-refresh min behavior including zero and high proposals and local errors. Preserve compatible cache lookup (including original pair and lifetime), resume with an omitted or nonmatching key list and index zero, unknown_key_id critical 52 for resume-only misses before authority, and provisioned authority mismatch fatal 40 including compatible hits. At full selection, return one clear fatal handshake_failure for no representable default-parameter unrestricted RSA entry or no exact [6,3] pair. Include split pairs, both missing, empty full key vector, and key index beyond 255. Keep WinWAP explicit compatibility and inspector diagnostics unchanged. Reuse existing InitialAlert send-only action, server sequence 0, explicit reply length and checksum of exact received opening record. Successful handling of this reply leaves the idle wire candidate reusable and commits no read/write state or cache entry. Repeat eligible refusals byte-identically with no autonomous retries. UDP pending replacement remains candidate-only. An incompatible fresh B at capacity one sends its alert and leaves accepted A's deadline, flight, routing and cache intact. Test A exact retry and completion with protected data. Preserve same-random, retired, capacity and established guards and the datagram budget. Follow the complete reviewed deterministic matrix. Use legitimate local in-memory fixtures, fixed clocks, independently expected bytes/checksum, successful same-ID resumption and new-ID full fallback controls. Name new tests containing algorithm_alert. Preserve the existing negative-offer and WinWAP controls, updating only affected expectations. Keep Rust changes narrow and readable, no external network or simulator runs, no dependencies, no unrelated edits and no Waves writes. Maintainer owns evidence and documentation. Run targeted offline Cargo checks.",
+  "paths": [
+    "src/wire.rs",
+    "src/wire/codec.rs",
+    "src/wire/algorithm_alert_tests.rs",
+    "tests/protected_echo.rs",
+    "tests/provisioned_trust.rs",
+    "tests/wire_resumption.rs",
+    "tests/udp_adapter.rs"
+  ],
+  "checks": [
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "algorithm_alert"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "protected_echo",
+      "--test",
+      "provisioned_trust"
+    ],
+    [
+      "cargo",
+      "test",
+      "--locked",
+      "--offline",
+      "--test",
+      "wire_resumption",
+      "--test",
+      "udp_adapter",
+      "--test",
+      "legacy_winwap",
+      "--test",
+      "inspector"
+    ]
+  ],
+  "timeoutSeconds": 900
+}

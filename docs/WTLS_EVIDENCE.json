@@ -397,6 +397,13 @@
         ],
         "scope": "Exact Ruflo review and 137 Rust tests. A classified native leaf rejection on the provisioned client's full handshake returns a typed diagnostic and a clear fatal reply. Wire tests cover alert mapping, exact record bytes and checksum, one-shot behavior, and local failures. UDP tests cover delivery, loss, and retirement. A rejected fallback preserves the eligible verified session at its original expiry. The manual and diagnostic-only entry points keep their existing contract."
       }
+    },
+    {
+      "id": "WTLS-CL-FULL-SELECTION-HANDSHAKE-FAILURE",
+      "workItem": "WTLS-222",
+      "status": "open",
+      "source": "WAP-199-WTLS-20000218-a §§9.2.1, 9.2.3.1, 10.2–10.2.2, 10.4, 10.5.1.2–10.5.1.3, and WAP-199_104 §3.3",
+      "statement": "An admissible initial offer that reaches full authenticated UDP selection and has no usable RSA key exchange or exact supported cipher and MAC pair receives a clear fatal handshake_failure with the ClientHello record checksum. Cache, authority, and pending association rules retain their scoped precedence."
     }
   ]
 }

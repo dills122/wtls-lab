@@ -155,9 +155,26 @@
     {
       "id": "WTLS-CL-PROVISIONED-TRUST",
       "workItem": "WTLS-210",
-      "status": "open",
+      "status": "verified",
       "source": "WAP-199-WTLS-20000218-a, §§10.2.2, 10.5.1.2, 10.5.2 and 11.1.4, with WAP-199_104 and WAP-199_105 §3.3",
-      "statement": "In the opt-in authenticated profile, a gateway certificate is verified against its provisioned issuing authority and selected against the offered authority list. The RSA authority identifier hashes raw unsigned modulus bytes. The client verifies the native leaf independently. Cache resumption preserves the approved same-trust-context and conflicting-list rules."
+      "statement": "In the opt-in authenticated profile, a gateway certificate is verified against its provisioned issuing authority and selected against the offered authority list. The RSA authority identifier hashes raw unsigned modulus bytes. The client verifies the native leaf independently. Cache resumption preserves the approved same-trust-context and conflicting-list rules.",
+      "evidence": {
+        "verifiedCommit": "6926c741d07e8b4ae74072b248c628f916e1cbf2",
+        "claimId": "f89298ff6f2d486fb6ef27ddb992d102",
+        "localReceipt": "ruflo-wtls-loop/f89298ff6f2d486fb6ef27ddb992d102/receipt.json",
+        "design": "docs/WAP_199_PROVISIONED_TRUST_PLAN.md",
+        "tests": "tests/provisioned_trust.rs",
+        "scenarios": [
+          "TRUST-01",
+          "TRUST-02",
+          "TRUST-03",
+          "TRUST-04",
+          "TRUST-05",
+          "TRUST-06"
+        ],
+        "scope": "Exact Ruflo review and 99 Rust tests. Deterministic evidence covers the explicitly selected provisioned profile, RSA authority ID encoding, matching/empty/nonmatching offers, independent leaf validation, and resumption, including conflicting offers and cache-context changes.",
+        "peerObservation": "The live provisioned BlackBerry check remains a separate milestone."
+      }
     }
   ]
 }

@@ -76,6 +76,28 @@ The echo tests exchange only in-memory datagrams and generate their own lab RSA 
 
 The opt-in `ResumableServer` and `ResumableClient` contexts support abbreviated wire handshakes for this authenticated profile. Each new connection derives keys from fresh hello randoms and the cached master secret. The [cache design](docs/WIRE_SESSION_RESUMPTION.md) describes configuration and lifetime. The [BlackBerry 7290 run](fixtures/HISTORICAL_PEERS.md#blackberry-abbreviated-handshake) verified an actual abbreviated exchange and protected WSP traffic after reconnect. The legacy record protection is intended for isolated lab use. [WAP-199 §§8.7, 9.2.3, 10–11, and Appendix A](https://www.openmobilealliance.org/tech/affiliates/wap/Technical_June2000-20021106%5B1%5D.zip) · [Kannel 1.4.5 source release](https://www.kannel.org/download/1.4.5/)
 
+## Provisioned authority selection
+
+Use `WirePeer::provisioned_client` or `ResumableClient::provisioned` with the
+client's `TrustAnchor` to advertise the authority that verifies the expected
+gateway leaf. `ServerIdentity::provisioned` accepts the gateway certificate,
+its private key, the expected issuer name, and the issuer's RSA public key.
+Its validated identity works with `WirePeer::server` and `ResumableServer::new`.
+The resumable contexts work with the existing UDP adapter.
+
+The gateway accepts a matching RSA authority in a nonempty list and permits
+an empty list with an authenticated full offer. The client independently
+verifies the leaf signature, issuer, expected subject, and validity before key
+transport. A conflicting nonempty list declines resumption while preserving
+the cached session for an eligible reconnect. Create fresh contexts when
+changing credentials, trust, or certificate-selection policy.
+
+```sh
+cargo test --locked --offline --test provisioned_trust
+```
+
+[WAP-199 corrections and deterministic gate](docs/WAP_199_PROVISIONED_TRUST_PLAN.md)
+
 ## Connection reporting for adapters
 
 Use `WirePeer::status()` while driving the handshake and `WirePeer::connection_info()` after establishment. It reports the WAP-199 negotiated identifiers and the verification performed on the remote identity from that endpoint. In this profile the client verifies the server certificate and the server has no authenticated client identity.

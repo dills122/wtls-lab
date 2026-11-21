@@ -1,8 +1,6 @@
 # WAP-199 provisioned trust plan
 
-**Status.** Approved for WTLS-210 implementation. The deterministic trust gate and
-historical peer runs have their own evidence. See the
-[WTLS-210 packet](../scripts/ruflo/packets/WTLS-210.json).
+**Status.** WTLS-210 passed deterministic verification at `6926c74`. The live BlackBerry trust-provisioning check remains separate. See the [WTLS-210 packet](../scripts/ruflo/packets/WTLS-210.json) and [evidence ledger](WTLS_EVIDENCE.json).
 
 ## Support boundary
 
@@ -38,7 +36,7 @@ IDs below identify the corresponding PDFs in the release archive.
 | `WAP-199_105-WTLS-20011027-a`, §3.3 | Clarifies identifier type 254 in §10.5.1.2. RSA hashes the unsigned modulus bytes with SHA-1, without an ASN.1 encoding or sign octet. | Compute and verify RSA authority identifiers with an independent known-answer fixture. ECC identifiers are deferred. |
 | `WAP-199_106-WTLS-20011027-a`, §3.3 | Narrows the acceptable identifier types in the optional client CertificateRequest path in §10.5.4 to 0 and 254. | Defer with client-certificate authentication. The trusted-authority vector in ClientHello continues to follow §§10.5.1.2 and 10.5.2. |
 
-## Proposed behavior
+## Profile behavior
 
 **Reference client.** In the provisioned path, use its configured CA public key
 to place one type-254 RSA entry in the ClientHello trusted-authority vector.
@@ -47,7 +45,7 @@ the received leaf using the provisioned key, exact WTLS identity and validity
 interval, then complete the Finished exchange over the original wire transcript.
 A matching advertised identifier is a certificate-selection hint. The client
 verifies the leaf signature independently.
-[ClientHello codec](../src/wire/codec.rs#L39) ·
+[ClientHello codec](../src/wire/codec.rs#L35) ·
 [Existing trust verifier](../src/wire/certificate.rs#L16)
 
 **Gateway.** Provision a CA public key alongside the gateway's existing leaf
@@ -56,18 +54,19 @@ the issuer identity before serving it. Match supported RSA hash entries against
 that authority's ID. A nonempty list without a compatible match receives an
 initial clear fatal `handshake_failure` alert with the ClientHello checksum,
 before any ServerHello, certificate flight, or new session allocation.
-Anonymous negotiation requires the separately selected compatibility profile. For an empty list with a
-usable authenticated offer, allow the configured certificate, as _104 permits.
+Anonymous negotiation uses a separately selected compatibility profile. An
+empty list with a usable authenticated offer permits the configured
+certificate under _104.
 The Rust client still verifies it through its independently provisioned anchor.
 Select provisioned behavior explicitly while the existing baseline and
 manual-trust harnesses retain documented entry points.
-[Existing server identity](../src/wire/certificate.rs#L65) ·
-[Server hello decision](../src/wire.rs#L537)
+[Existing server identity](../src/wire/certificate.rs#L57) ·
+[Server hello decision](../src/wire.rs#L551)
 
 **Resumption.** A session can resume in the gateway identity, trust and policy
 context in which it was established. A change to those inputs starts a fresh
 context. A valid abbreviated exchange can omit the authority vector and has
-no certificate flight. Proposed profile policy is to decline resumption when
+no certificate flight. The profile declines resumption when
 a supplied nonempty list excludes the cached authority. Preserve the existing
 cache entry for eligible peers. A cache miss with a usable full offer goes
 through the full certificate-selection rules. A resume-only miss keeps the existing
@@ -115,15 +114,9 @@ existing manual-trust run separately. The deterministic gate does not depend
 on the live run.
 [BlackBerry offer and trust evidence](../fixtures/HISTORICAL_PEERS.md#blackberry-authenticated-exchange-and-cached-id)
 
-## Decisions for review
+## Approved decisions
 
-1. Confirm that the empty-list path is supported for authenticated clients
-   whose trust is provisioned out of band. The nonempty-list path requires a
-   match, and the reference client advertises its provisioned authority.
-2. Confirm that an explicit nonmatching authority list declines resumption
-   while valid abbreviated offers can omit that list. This is a profile
-   policy layered on the certificate-selection rule.
-3. Confirm that one gateway leaf and one authority cover the first release.
-   Add multi-authority certificate selection when a verified peer needs it.
-4. Confirm that TRUST-01 through TRUST-06 are the implementation gate and that
-   live BlackBerry provisioning is a separate verification milestone.
+- A full authenticated offer may omit the authority list. A nonempty list requires a compatible match.
+- A nonmatching nonempty list declines resumption while keeping the valid cache entry.
+- The profile covers one gateway leaf and one provisioned authority.
+- TRUST-01 through TRUST-06 are the deterministic gate. Live BlackBerry provisioning has its own verification milestone.

@@ -91,7 +91,11 @@ These grouped rows account for the remaining IDs in A.1 and A.2.
 
 WAP-261 and its corrections remain outside this WAP-199 matrix.
 
-## Gaps for review
+## Verified gap work
+
+G1–G6 are verified within the selected profile. The
+[support promise review](WAP_199_SUPPORT_PROMISE_REVIEW.md) records
+remaining protocol and evidence gaps and proposes the next slice.
 
 ### G1. Sequence exhaustion
 

@@ -15,6 +15,8 @@ mod alert_tests;
 #[cfg(test)]
 mod application_batch_tests;
 #[cfg(test)]
+mod certificate_alert_tests;
+#[cfg(test)]
 pub(crate) mod sequence_tests;
 
 use std::error::Error;
@@ -40,6 +42,7 @@ pub use report::{
 
 pub use session::{ResumableClient, ResumableServer};
 
+use certificate::{CertificateFailure, VerifiedLeaf, verify_raw_signature};
 use codec::{
     FIXED_PARAMETERS, InitialAlert, ServerSelection, decode_legacy_client_key_exchange,
     encode_alert, encode_client_hello,
@@ -117,6 +120,40 @@ impl From<HandshakeError> for WireError {
             HandshakeError::FinishedUnavailable => Self::Provider,
             _ => Self::Handshake(error),
         }
+    }
+}
+
+/// A failed receive and its optional one-shot reply datagram.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ReceiveError {
+    pub diagnostic: WireError,
+    pub reply: Option<Vec<u8>>,
+}
+
+impl fmt::Display for ReceiveError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        self.diagnostic.fmt(f)
+    }
+}
+
+impl Error for ReceiveError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.diagnostic)
+    }
+}
+
+impl From<WireError> for ReceiveError {
+    fn from(diagnostic: WireError) -> Self {
+        Self {
+            diagnostic,
+            reply: None,
+        }
+    }
+}
+
+impl From<HandshakeError> for ReceiveError {
+    fn from(error: HandshakeError) -> Self {
+        WireError::from(error).into()
     }
 }
 
@@ -327,11 +364,34 @@ impl WirePeer {
         self.apply(actions)
     }
 
+    /// Process a datagram and return only the diagnostic on failure.
     pub fn receive(
         &mut self,
         bytes: &[u8],
         monotonic_ms: u64,
     ) -> Result<Vec<WireAction>, WireError> {
+        self.receive_with_reply(bytes, monotonic_ms)
+            .map_err(|error| error.diagnostic)
+    }
+
+    /// Process a datagram and expose any reply that the caller can forward
+    /// alongside the diagnostic from a failed receive.
+    pub fn receive_with_reply(
+        &mut self,
+        bytes: &[u8],
+        monotonic_ms: u64,
+    ) -> Result<Vec<WireAction>, ReceiveError> {
+        self.receive_with_certificate_check(bytes, monotonic_ms, |trust, certificate, now| {
+            trust.verify_provisioned(certificate, now, verify_raw_signature)
+        })
+    }
+
+    fn receive_with_certificate_check(
+        &mut self,
+        bytes: &[u8],
+        monotonic_ms: u64,
+        verify: impl FnOnce(&TrustAnchor, &[u8], u32) -> Result<VerifiedLeaf, CertificateFailure>,
+    ) -> Result<Vec<WireAction>, ReceiveError> {
         if self.status() == Status::Closed {
             return Ok(Vec::new());
         }
@@ -349,7 +409,7 @@ impl WirePeer {
                 &WireFinished(self.traffic.as_ref(), self.selection.as_ref()),
                 |_, _| {},
             )?;
-            return self.apply(actions);
+            return Ok(self.apply(actions)?);
         }
 
         let mut incoming = match self.decode(bytes, monotonic_ms) {
@@ -365,7 +425,7 @@ impl WirePeer {
                     self.handshake.abort();
                     self.release_session(false)?;
                 }
-                return Err(error);
+                return Err(error.into());
             }
             Err(
                 error @ WireError::PeerAlert {
@@ -380,7 +440,7 @@ impl WirePeer {
                 // the association here. Dropping the datagram also drops its data.
                 self.handshake.abort();
                 self.release_session(fields.level == ALERT_FATAL)?;
-                return Err(error);
+                return Err(error.into());
             }
             result => result?,
         };
@@ -417,12 +477,26 @@ impl WirePeer {
             && Some(*session) != self.handshake.cached_session()
         {
             let local = self.random.ok_or(WireError::InvalidMessage)?;
-            let leaf = match trust.verify(certificate, self.now) {
+            let leaf = if self.authority_id.is_some() {
+                verify(trust, certificate, self.now)
+            } else {
+                trust
+                    .verify(certificate, self.now)
+                    .map_err(|_| CertificateFailure::Local)
+            };
+            let leaf = match leaf {
                 Ok(leaf) => leaf,
-                Err(error) => {
+                Err(failure) => {
                     self.handshake.abort();
-                    self.session = None;
-                    return Err(error);
+                    self.release_session(false)?;
+                    let reply = failure
+                        .alert_description()
+                        .map(|description| self.certificate_alert(description, incoming.checksum))
+                        .transpose()?;
+                    return Err(ReceiveError {
+                        diagnostic: WireError::CertificateRejected,
+                        reply,
+                    });
                 }
             };
             let selected = incoming
@@ -464,7 +538,7 @@ impl WirePeer {
                 self.handshake.abort();
                 self.traffic = None;
                 self.session = None;
-                return Err(WireError::InvalidMessage);
+                return Err(WireError::InvalidMessage.into());
             }
             Some(cache)
         } else {
@@ -564,9 +638,30 @@ impl WirePeer {
             self.handshake.abort();
             self.traffic = None;
             self.session = None;
-            return Err(error);
+            return Err(error.into());
         }
         Ok(result)
+    }
+
+    fn certificate_alert(
+        &mut self,
+        description: u8,
+        checksum: [u8; 4],
+    ) -> Result<Vec<u8>, WireError> {
+        let fragment = AlertFields {
+            level: ALERT_FATAL,
+            description,
+            checksum,
+        }
+        .encode();
+        crate::encode_datagram(&[Record {
+            content_type: RecordType::Alert,
+            cipher_spec: CipherSpec::Null,
+            sequence: self.write.next().ok_or(HandshakeError::SequenceExhausted)?,
+            length_form: LengthForm::Explicit,
+            fragment: &fragment,
+        }])
+        .map_err(WireError::Encode)
     }
 
     fn lock_cache(&self) -> Result<Option<MutexGuard<'_, SessionCache>>, WireError> {

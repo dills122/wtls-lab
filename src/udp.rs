@@ -5,6 +5,8 @@
 mod socket;
 
 #[cfg(test)]
+mod certificate_alert_tests;
+#[cfg(test)]
 mod sequence_tests;
 
 pub use socket::SocketTransport;
@@ -16,8 +18,8 @@ use std::num::{NonZeroU64, NonZeroUsize};
 
 use crate::handshake::{CloseScope, HandshakeKind, Status};
 use crate::wire::{
-    DatagramBudget, DatagramTooLarge, ResumableClient, ResumableServer, WireAction, WireError,
-    WirePeer, decode_client_hello,
+    DatagramBudget, DatagramTooLarge, ReceiveError, ResumableClient, ResumableServer, WireAction,
+    WireError, WirePeer, decode_client_hello,
 };
 use crate::{CipherSpec, RecordType, decode_record_envelope};
 
@@ -162,7 +164,7 @@ impl Adapter {
             })
             .collect();
         for remote in due {
-            events.extend(self.drive(remote, |peer| peer.tick(monotonic_ms)));
+            events.extend(self.drive(remote, |peer| peer.tick(monotonic_ms).map_err(Into::into)));
         }
         events
     }
@@ -185,7 +187,7 @@ impl Adapter {
             Ok(peer) => peer,
             Err(error) => return diagnostic(remote, Diagnostic::Protocol(error)),
         };
-        let events = self.events(remote, peer.start(monotonic_ms));
+        let events = self.events(remote, peer.start(monotonic_ms).map_err(Into::into));
         if has_send(&events) && peer.status() == Status::Negotiating {
             self.associations.insert(
                 remote,
@@ -235,7 +237,7 @@ impl Adapter {
                 } else {
                     // WirePeer distinguishes an exact replay from a conflicting
                     // same-random hello and handles ordinary negotiation traffic.
-                    return self.drive(remote, |peer| peer.receive(bytes, monotonic_ms));
+                    return self.drive(remote, |peer| peer.receive_with_reply(bytes, monotonic_ms));
                 }
             }
             None => {
@@ -262,7 +264,7 @@ impl Adapter {
             Ok(peer) => peer,
             Err(error) => return diagnostic(remote, Diagnostic::Protocol(error)),
         };
-        let events = self.events(remote, peer.receive(bytes, monotonic_ms));
+        let events = self.events(remote, peer.receive_with_reply(bytes, monotonic_ms));
         // An initial alert leaves the candidate idle. Admission requires a
         // negotiating peer whose first flight passed the datagram budget.
         if has_send(&events) && peer.status() == Status::Negotiating {
@@ -306,17 +308,19 @@ impl Adapter {
     /// Protect an application payload and check the resulting encoded datagram
     /// against the budget. WirePeer may advance even when output exceeds it.
     pub fn send_application(&mut self, remote: SocketAddr, payload: Vec<u8>) -> Vec<Event> {
-        self.drive(remote, |peer| peer.send_application(payload))
+        self.drive(remote, |peer| {
+            peer.send_application(payload).map_err(Into::into)
+        })
     }
 
     pub fn close(&mut self, remote: SocketAddr, scope: CloseScope) -> Vec<Event> {
-        self.drive(remote, |peer| peer.close(scope))
+        self.drive(remote, |peer| peer.close(scope).map_err(Into::into))
     }
 
     fn drive(
         &mut self,
         remote: SocketAddr,
-        operation: impl FnOnce(&mut WirePeer) -> Result<Vec<WireAction>, WireError>,
+        operation: impl FnOnce(&mut WirePeer) -> Result<Vec<WireAction>, ReceiveError>,
     ) -> Vec<Event> {
         let Some(entry) = self.associations.get_mut(&remote) else {
             return diagnostic(remote, Diagnostic::NoAssociation);
@@ -352,28 +356,38 @@ impl Adapter {
     fn events(
         &self,
         remote: SocketAddr,
-        actions: Result<Vec<WireAction>, WireError>,
+        actions: Result<Vec<WireAction>, ReceiveError>,
     ) -> Vec<Event> {
         let actions = match actions {
             Ok(actions) => actions,
-            Err(error) => return diagnostic(remote, Diagnostic::Protocol(error)),
+            Err(error) => {
+                let mut events = diagnostic(remote, Diagnostic::Protocol(error.diagnostic));
+                if let Some(reply) = error.reply {
+                    events.push(self.send_event(remote, reply));
+                }
+                return events;
+            }
         };
         actions
             .into_iter()
             .map(|action| match action {
-                WireAction::Send(bytes) => match self.budget.check(&bytes) {
-                    Ok(()) => Event::Send { remote, bytes },
-                    Err(error) => Event::Diagnostic {
-                        remote,
-                        reason: Diagnostic::OutboundTooLarge(error),
-                    },
-                },
+                WireAction::Send(bytes) => self.send_event(remote, bytes),
                 WireAction::Established(kind) => Event::Established { remote, kind },
                 WireAction::Deliver(payload) => Event::Deliver { remote, payload },
                 WireAction::Closed(scope) => Event::Closed { remote, scope },
                 WireAction::TimedOut => Event::TimedOut { remote },
             })
             .collect()
+    }
+
+    fn send_event(&self, remote: SocketAddr, bytes: Vec<u8>) -> Event {
+        match self.budget.check(&bytes) {
+            Ok(()) => Event::Send { remote, bytes },
+            Err(error) => Event::Diagnostic {
+                remote,
+                reason: Diagnostic::OutboundTooLarge(error),
+            },
+        }
     }
 }
 

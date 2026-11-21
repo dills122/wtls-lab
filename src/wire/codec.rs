@@ -521,8 +521,12 @@ impl InitialAlert {
             Self::UnknownKeyId => (2, 52),
             Self::HandshakeFailure => (3, 40),
         };
-        let [a, b, c, d] = checksum;
-        [level, description, a, b, c, d]
+        AlertFields {
+            level,
+            description,
+            checksum,
+        }
+        .encode()
     }
 }
 
@@ -532,8 +536,12 @@ pub(super) fn encode_alert(alert: Alert, checksum: [u8; 4]) -> [u8; 6] {
         Alert::CloseNotify(CloseScope::Session) => (3, 1),
         Alert::DuplicateFinishedReceived => (1, 57),
     };
-    let [a, b, c, d] = checksum;
-    [level, description, a, b, c, d]
+    AlertFields {
+        level,
+        description,
+        checksum,
+    }
+    .encode()
 }
 
 /// Raw fields from a complete clear or authenticated alert fragment.
@@ -556,6 +564,11 @@ pub fn decode_alert_fields(data: &[u8]) -> Result<AlertFields, WireError> {
 }
 
 impl AlertFields {
+    pub(super) fn encode(self) -> [u8; 6] {
+        let [a, b, c, d] = self.checksum;
+        [self.level, self.description, a, b, c, d]
+    }
+
     /// The WAP-199 §10.2 name for a recognized alert description.
     pub fn description_name(self) -> Option<&'static str> {
         Some(match self.description {

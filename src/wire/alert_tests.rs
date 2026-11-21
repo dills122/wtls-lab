@@ -21,13 +21,18 @@ fn public(key: &Rsa<Private>) -> Rsa<Public> {
     Rsa::from_public_components(key.n().to_owned().unwrap(), key.e().to_owned().unwrap()).unwrap()
 }
 
-pub(super) fn contexts() -> (ResumableClient, ResumableServer) {
+pub(super) fn credentials() -> (TrustAnchor, ServerIdentity) {
     static KEYS: OnceLock<(Rsa<Private>, Rsa<Private>)> = OnceLock::new();
     let (ca, key) =
         KEYS.get_or_init(|| (Rsa::generate(2048).unwrap(), Rsa::generate(2048).unwrap()));
     let cert = issue_certificate(ISSUER, SUBJECT, (NOW - 1)..=(NOW + 1), ca, &public(key)).unwrap();
     let identity = ServerIdentity::new(cert, key.clone()).unwrap();
     let trust = TrustAnchor::new(ISSUER, SUBJECT, public(ca)).unwrap();
+    (trust, identity)
+}
+
+pub(super) fn contexts() -> (ResumableClient, ResumableServer) {
+    let (trust, identity) = credentials();
     let lifetime = NonZeroU64::new(1_000).unwrap();
     let retry = RetryPolicy {
         timeout_ms: NonZeroU64::new(10).unwrap(),

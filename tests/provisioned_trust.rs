@@ -8,7 +8,7 @@ use openssl::pkey::{Private, Public};
 use openssl::rsa::Rsa;
 use openssl::sha::sha1;
 use wtls_lab::handshake::{HandshakeKind, Message, RetryPolicy, Status};
-use wtls_lab::udp::{Adapter, Event};
+use wtls_lab::udp::{Adapter, Diagnostic, Event};
 use wtls_lab::wire::{
     AlertFields, DatagramBudget, KeyExchangeOffer, KeyIdentifier, PeerAuthentication,
     ResumableClient, ResumableServer, ServerIdentity, TrustAnchor, WireAction, WireError, WirePeer,
@@ -636,4 +636,460 @@ fn trust_06_resumption_omission_mismatch_isolation_and_fallback() {
     let flight = receive(&mut server, &stale, 105);
     assert_ne!(server_id(&flight), id);
     assert_full_flight(&flight, 1, &leaf(ca, ISSUER, SUBJECT, VALID));
+}
+
+#[test]
+fn certificate_alert_trust_05_retires_pending_gateway() {
+    use wtls_lab::wire::AlertProtection;
+
+    let ca = &keys().ca;
+    let wrong_ca = &keys().other_ca;
+    let clients = ResumableClient::provisioned(RETRY, trust(ca), TTL);
+    let servers = server_context(
+        ServerIdentity::new(
+            leaf(wrong_ca, ISSUER, SUBJECT, VALID),
+            keys().gateway.clone(),
+        )
+        .unwrap(),
+    );
+    let mut client = Adapter::new(None, DatagramBudget::new(1200), NonZeroUsize::MIN);
+    let mut server = Adapter::new(Some(servers), DatagramBudget::new(1200), NonZeroUsize::MIN);
+    let client_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 49152).into();
+    let server_addr = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 9203).into();
+    let hello = udp_send(&client.connect(server_addr, &clients, NOW, 0), server_addr);
+    let flight = udp_send(&server.receive(client_addr, &hello, NOW, 1), client_addr);
+    assert_eq!(server.status(client_addr), Some(Status::Negotiating));
+
+    let events = client.receive(server_addr, &flight, NOW, 2);
+    assert!(matches!(
+        events.first(),
+        Some(Event::Diagnostic {
+            reason: Diagnostic::Protocol(WireError::CertificateRejected),
+            ..
+        })
+    ));
+    assert_eq!(
+        events.len(),
+        2,
+        "trust diagnostic must be followed by one alert"
+    );
+    let [
+        Event::Diagnostic {
+            remote,
+            reason: Diagnostic::Protocol(WireError::CertificateRejected),
+        },
+        Event::Send {
+            remote: destination,
+            bytes,
+        },
+    ] = events.as_slice()
+    else {
+        panic!("expected trust diagnostic followed by one alert");
+    };
+    assert_eq!((*remote, *destination), (server_addr, server_addr));
+    assert_eq!(bytes, &[0xc2, 0, 1, 0, 6, 3, 42, 0xc0, 0x0e, 2, 0]);
+    assert_eq!(client.status(server_addr), None);
+    assert!(client.tick(10).is_empty());
+    let fresh_hello = udp_send(&client.connect(server_addr, &clients, NOW, 10), server_addr);
+    assert!(
+        matches!(server.receive(client_addr, bytes, NOW, 11).as_slice(), [Event::Diagnostic {
+        remote,
+        reason: Diagnostic::Protocol(WireError::PeerAlert {
+            fields: AlertFields { level: 3, description: 42, checksum: [0xc0, 0x0e, 2, 0] },
+            protection: AlertProtection::Clear,
+        }),
+    }] if *remote == client_addr)
+    );
+    assert_eq!(server.status(client_addr), None);
+    let other_client = SocketAddrV4::new(Ipv4Addr::LOCALHOST, 49153).into();
+    assert!(
+        matches!(server.receive(other_client, &fresh_hello, NOW, 12).as_slice(), [Event::Send { remote, .. }] if *remote == other_client)
+    );
+}
+
+fn certificate_fragment(format: u8, certificate: &[u8]) -> Vec<u8> {
+    let mut list = vec![format];
+    list.extend_from_slice(certificate);
+    let mut handshake = vec![11];
+    handshake.extend(vector(&vector(&list)));
+    handshake
+}
+
+fn with_certificate(flight: &[u8], format: u8, certificate: &[u8]) -> Vec<u8> {
+    let mut records = decode_datagram(flight).unwrap();
+    let fragment = certificate_fragment(format, certificate);
+    records[1].fragment = &fragment;
+    encode_datagram(&records).unwrap()
+}
+
+fn certificate_alert_reply(
+    client: &mut WirePeer,
+    flight: &[u8],
+    at: u64,
+    description: u8,
+) -> Vec<u8> {
+    let error = client.receive_with_reply(flight, at).unwrap_err();
+    assert_eq!(error.diagnostic, WireError::CertificateRejected);
+    let reply = error.reply.expect("one certificate rejection alert");
+
+    let records = decode_datagram(flight).unwrap();
+    let done = records.last().unwrap();
+    let done = &flight[flight.len() - done.wire_len()..];
+    let checksum = done.chunks(4).fold(0u32, |sum, chunk| {
+        let mut word = [0; 4];
+        word[..chunk.len()].copy_from_slice(chunk);
+        sum ^ u32::from_be_bytes(word)
+    });
+    let mut expected = vec![0xc2, 0, 1, 0, 6, 3, description];
+    expected.extend_from_slice(&checksum.to_be_bytes());
+    assert_eq!(reply, expected);
+    assert_eq!(client.status(), Status::Closed);
+    assert_eq!(client.deadline(), None);
+    assert!(client.connection_info().is_none());
+    assert!(client.send_application(vec![1]).is_err());
+    assert_eq!(client.receive_with_reply(flight, at + 1), Ok(vec![]));
+    assert_eq!(client.tick(at + 30), Ok(vec![]));
+    reply
+}
+
+#[test]
+fn certificate_alert_classifies_native_leaves_in_order() {
+    let ca = &keys().ca;
+    let other_ca = &keys().other_ca;
+    let valid = leaf(ca, ISSUER, SUBJECT, VALID);
+    let mut invalid_interval = valid.clone();
+    let start_offset = 2 + 4 + ISSUER.len();
+    invalid_interval[start_offset..start_offset + 4].copy_from_slice(&(NOW + 2).to_be_bytes());
+    let mut invalid_signature = valid.clone();
+    let signature_offset = valid.len() - ca.size() as usize;
+    invalid_signature[signature_offset..].fill(0);
+    let short_rsa = Rsa::generate(768).unwrap();
+    // issue_certificate enforces the offer profile. Rebuild the modulus and sign
+    // the new certificate body to represent a complete smaller native RSA leaf.
+    let mut short_leaf = valid[..start_offset + 8 + 4 + SUBJECT.len() + 2].to_vec();
+    short_leaf.extend(vector(&short_rsa.e().to_vec()));
+    short_leaf.extend(vector(&short_rsa.n().to_vec()));
+    let mut signature = vec![0; ca.size() as usize];
+    ca.private_encrypt(
+        &sha1(&short_leaf),
+        &mut signature,
+        openssl::rsa::Padding::PKCS1,
+    )
+    .unwrap();
+    short_leaf.extend(vector(&signature));
+
+    let clients = ResumableClient::provisioned(RETRY, trust(ca), TTL);
+    let servers = server_context(server_identity(ca, SUBJECT));
+    for (name, certificate, description) in [
+        ("truncated supported body", vec![1, 2, 1], 42),
+        ("reversed dates", invalid_interval, 42),
+        ("complete RSA leaf below the modulus limit", short_leaf, 43),
+        (
+            "issuer before signature",
+            leaf(other_ca, "unknown CA", SUBJECT, VALID),
+            48,
+        ),
+        (
+            "claimed issuer with different key",
+            leaf(other_ca, ISSUER, SUBJECT, VALID),
+            42,
+        ),
+        ("invalid signature block", invalid_signature, 42),
+        (
+            "signature before subject",
+            leaf(other_ca, ISSUER, "wrong subject", VALID),
+            42,
+        ),
+        (
+            "wrong subject",
+            leaf(ca, ISSUER, "wrong subject", VALID),
+            46,
+        ),
+        (
+            "subject before time",
+            leaf(ca, ISSUER, "wrong subject", NOW - 2..=NOW - 1),
+            46,
+        ),
+        ("expired", leaf(ca, ISSUER, SUBJECT, NOW - 2..=NOW - 1), 45),
+        (
+            "not yet valid",
+            leaf(ca, ISSUER, SUBJECT, NOW + 1..=NOW + 2),
+            45,
+        ),
+    ] {
+        let mut client = clients.peer(NOW).unwrap();
+        let hello = start(&mut client, 0);
+        let flight = receive(&mut servers.peer(NOW).unwrap(), &hello, 1);
+        let flight = with_certificate(&flight, 1, &certificate);
+        let reply = certificate_alert_reply(&mut client, &flight, 2, description);
+        assert_eq!(
+            reply,
+            [0xc2, 0, 1, 0, 6, 3, description, 0xc0, 0x0e, 2, 0],
+            "{name}"
+        );
+    }
+
+    for now in [*VALID.start(), *VALID.end()] {
+        let mut client = clients.peer(now).unwrap();
+        let mut server = servers.peer(now).unwrap();
+        let flight = receive(&mut server, &start(&mut client, 0), 1);
+        finish_full(&mut client, &mut server, &flight, 2);
+    }
+}
+
+#[test]
+fn certificate_alert_uses_exact_lengthless_done_after_identical_retry() {
+    let ca = &keys().ca;
+    let clients = ResumableClient::provisioned(RETRY, trust(ca), TTL);
+    let identity = ServerIdentity::new(
+        leaf(&keys().other_ca, ISSUER, SUBJECT, VALID),
+        keys().gateway.clone(),
+    )
+    .unwrap();
+    let mut server = server_context(identity).peer(NOW).unwrap();
+    let mut client = clients.peer(NOW).unwrap();
+    let hello = start(&mut client, 0);
+    let flight = receive(&mut server, &hello, 1);
+    assert_eq!(client.tick(10), Ok(vec![WireAction::Send(hello.clone())]));
+    assert_eq!(receive(&mut server, &hello, 11), flight);
+
+    let mut records = decode_datagram(&flight).unwrap();
+    records[2].length_form = LengthForm::DatagramRemainder;
+    let flight = encode_datagram(&records).unwrap();
+    assert!(flight.ends_with(&[0x43, 0, 2, 14, 0, 0]));
+    assert_eq!(
+        certificate_alert_reply(&mut client, &flight, 12, 42),
+        [0xc2, 0, 1, 0, 6, 3, 42, 0x43, 0, 2, 14],
+    );
+}
+
+#[test]
+fn certificate_alert_is_scoped_to_ordered_well_framed_provisioned_flights() {
+    use wtls_lab::handshake::HandshakeError;
+
+    let ca = &keys().ca;
+    let invalid = leaf(&keys().other_ca, ISSUER, SUBJECT, VALID);
+    let clients = ResumableClient::provisioned(RETRY, trust(ca), TTL);
+    let servers = server_context(server_identity(ca, SUBJECT));
+    let mut client = clients.peer(NOW).unwrap();
+    let mut server = servers.peer(NOW).unwrap();
+    let flight = receive(&mut server, &start(&mut client, 0), 1);
+    let invalid_flight = with_certificate(&flight, 1, &invalid);
+    let mut records = decode_datagram(&invalid_flight).unwrap();
+    let incomplete = encode_datagram(&records[..2]).unwrap();
+    records.swap(1, 2);
+    records[1].sequence = 1;
+    records[2].sequence = 2;
+    let unordered = encode_datagram(&records).unwrap();
+    let mut malformed_handshake = records;
+    malformed_handshake.swap(1, 2);
+    malformed_handshake[1].sequence = 1;
+    malformed_handshake[2].sequence = 2;
+    malformed_handshake[2].fragment = &[14, 0, 1, 0];
+    let malformed_handshake = encode_datagram(&malformed_handshake).unwrap();
+
+    for (bytes, diagnostic) in [
+        (incomplete, HandshakeError::UnexpectedDatagram.into()),
+        (unordered, HandshakeError::UnexpectedDatagram.into()),
+        (malformed_handshake, WireError::InvalidMessage),
+        (
+            with_certificate(&flight, 2, &invalid),
+            WireError::UnsupportedProfile,
+        ),
+    ] {
+        let error = client.receive_with_reply(&bytes, 2).unwrap_err();
+        assert_eq!(error.diagnostic, diagnostic);
+        assert_eq!(error.reply, None);
+        assert_eq!(client.status(), Status::Negotiating);
+    }
+    let error = client
+        .receive_with_reply(&invalid_flight[..invalid_flight.len() - 1], 2)
+        .unwrap_err();
+    assert!(matches!(error.diagnostic, WireError::Decode(_)));
+    assert_eq!(error.reply, None);
+    finish_full(&mut client, &mut server, &flight, 3);
+
+    let mut unclassified = invalid.clone();
+    unclassified[1] = 1; // a different native signature algorithm
+    let mut provisioned = clients.peer(NOW).unwrap();
+    let flight = receive(
+        &mut servers.peer(NOW).unwrap(),
+        &start(&mut provisioned, 0),
+        1,
+    );
+    let error = provisioned
+        .receive_with_reply(&with_certificate(&flight, 1, &unclassified), 2)
+        .unwrap_err();
+    assert_eq!(error.diagnostic, WireError::CertificateRejected);
+    assert_eq!(error.reply, None);
+    assert_eq!(provisioned.status(), Status::Closed);
+
+    let mut manual = WirePeer::client(RETRY, trust(ca), NOW);
+    let flight = receive(&mut servers.peer(NOW).unwrap(), &start(&mut manual, 0), 1);
+    let error = manual
+        .receive_with_reply(&with_certificate(&flight, 1, &invalid), 2)
+        .unwrap_err();
+    assert_eq!(error.diagnostic, WireError::CertificateRejected);
+    assert_eq!(error.reply, None);
+    assert_eq!(manual.status(), Status::Closed);
+}
+
+fn udp_send(events: &[Event], expected_remote: SocketAddr) -> Vec<u8> {
+    let [Event::Send { remote, bytes }] = events else {
+        panic!("expected exactly one UDP send");
+    };
+    assert_eq!(*remote, expected_remote);
+    bytes.clone()
+}
+
+#[test]
+fn certificate_alert_udp_drop_keeps_pending_deadline_and_inbound_budget() {
+    use wtls_lab::wire::DatagramTooLarge;
+
+    let clients = ResumableClient::provisioned(RETRY, trust(&keys().ca), TTL);
+    let identity = ServerIdentity::new(
+        leaf(&keys().other_ca, ISSUER, SUBJECT, VALID),
+        keys().gateway.clone(),
+    )
+    .unwrap();
+    let servers = server_context(identity.clone());
+    let budget = DatagramBudget::new(1200);
+    let client_addr = "127.0.0.1:49152".parse().unwrap();
+    let other_client = "127.0.0.1:49153".parse().unwrap();
+    let server_addr = "127.0.0.1:9203".parse().unwrap();
+    let mut client = Adapter::new(None, budget, NonZeroUsize::MIN);
+    let mut server = Adapter::new(Some(servers), budget, NonZeroUsize::MIN)
+        .with_pending_handshake_timeout_ms(NonZeroU64::new(10).unwrap());
+
+    let hello = udp_send(&client.connect(server_addr, &clients, NOW, 0), server_addr);
+    let flight = udp_send(&server.receive(client_addr, &hello, NOW, 1), client_addr);
+    let events = client.receive(server_addr, &flight, NOW, 2);
+    assert!(matches!(
+        events.as_slice(),
+        [
+            Event::Diagnostic { reason: Diagnostic::Protocol(WireError::CertificateRejected), .. },
+            Event::Send { remote, bytes },
+        ] if *remote == server_addr && bytes.len() < flight.len()
+    ));
+    assert_eq!(client.status(server_addr), None);
+    assert_eq!(client.deadline(), None);
+    let next_hello = udp_send(&client.connect(server_addr, &clients, NOW, 3), server_addr);
+
+    // Drop the alert. A separate client cannot displace the occupied slot.
+    assert!(matches!(
+        server.receive(other_client, &next_hello, NOW, 4).as_slice(),
+        [Event::Diagnostic {
+            reason: Diagnostic::AtCapacity,
+            ..
+        }]
+    ));
+    assert_eq!(server.status(client_addr), Some(Status::Negotiating));
+    assert_eq!(server.deadline(), Some(11));
+    assert!(server.tick(10).is_empty());
+    assert!(matches!(
+        server.tick(11).as_slice(),
+        [Event::TimedOut { remote }] if *remote == client_addr
+    ));
+    assert_eq!(server.status(client_addr), None);
+    udp_send(
+        &server.receive(other_client, &next_hello, NOW, 12),
+        other_client,
+    );
+
+    let limit = 128;
+    let mut client = Adapter::new(None, DatagramBudget::new(limit), NonZeroUsize::MIN);
+    let hello = udp_send(&client.connect(server_addr, &clients, NOW, 13), server_addr);
+    let flight = receive(&mut WirePeer::server(identity, NOW).unwrap(), &hello, 14);
+    assert!(matches!(
+        client.receive(server_addr, &flight, NOW, 15).as_slice(),
+        [Event::Diagnostic {
+            remote,
+            reason: Diagnostic::InboundTooLarge(DatagramTooLarge { size, limit: observed_limit }),
+        }] if *remote == server_addr && *size == flight.len() && *observed_limit == limit
+    ));
+    assert_eq!(client.status(server_addr), Some(Status::Negotiating));
+    assert_eq!(client.deadline(), Some(23));
+    assert_eq!(udp_send(&client.tick(23), server_addr), hello);
+}
+
+#[test]
+fn certificate_alert_failed_fallback_preserves_original_cache_expiry() {
+    let ca = &keys().ca;
+    let clients = ResumableClient::provisioned(RETRY, trust(ca), TTL);
+    let servers = server_context(server_identity(ca, SUBJECT));
+    let mut client = clients.peer(NOW).unwrap();
+    let mut server = servers.peer(NOW).unwrap();
+    let flight = receive(&mut server, &start(&mut client, 0), 1);
+    let id = server_id(&flight);
+    finish_full(&mut client, &mut server, &flight, 2);
+
+    // Keep certificate wall time fixed. Only the retry/cache clock advances.
+    let invalid = leaf(&keys().other_ca, ISSUER, SUBJECT, VALID);
+    let restarted =
+        server_context(ServerIdentity::new(invalid.clone(), keys().gateway.clone()).unwrap());
+    let mut client = clients.peer(NOW).unwrap();
+    let mut restarted = restarted.peer(NOW).unwrap();
+    let offer = start(&mut client, 20);
+    assert_eq!(
+        decode_client_hello(client_hello(&offer))
+            .unwrap()
+            .session_id,
+        id
+    );
+
+    let same_id_full = with_certificate(&flight, 1, &invalid);
+    let error = client.receive_with_reply(&same_id_full, 21).unwrap_err();
+    assert_eq!(
+        error.diagnostic,
+        wtls_lab::handshake::HandshakeError::UnexpectedDatagram.into()
+    );
+    assert_eq!(error.reply, None);
+
+    let fallback = receive(&mut restarted, &offer, 22);
+    assert_ne!(server_id(&fallback), id);
+    assert_full_flight(&fallback, 1, &invalid);
+    let reply = certificate_alert_reply(&mut client, &fallback, 23, 42);
+    let error = restarted.receive_with_reply(&reply, 24).unwrap_err();
+    assert!(matches!(error.diagnostic, WireError::PeerAlert { .. }));
+    assert_eq!(error.reply, None);
+    assert_eq!(restarted.status(), Status::Closed);
+
+    let mut client = clients.peer(NOW).unwrap();
+    let mut server = servers.peer(NOW).unwrap();
+    let offer = start(&mut client, 99);
+    assert_eq!(
+        decode_client_hello(client_hello(&offer))
+            .unwrap()
+            .session_id,
+        id
+    );
+    let response = receive(&mut server, &offer, 100);
+    assert_abbreviated(&response, id, 1);
+    let actions = client.receive_with_reply(&response, 101).unwrap();
+    assert!(actions.contains(&WireAction::Established(HandshakeKind::Resumed)));
+    let actions = server.receive_with_reply(sends(&actions), 102).unwrap();
+    assert!(actions.contains(&WireAction::Established(HandshakeKind::Resumed)));
+
+    // Original establishment was at t=3 on the gateway and t=4 on the client.
+    assert_alert(
+        &mut servers.peer(NOW).unwrap(),
+        &offered_hello(&id, &[], &[]),
+        103,
+        2,
+        52,
+    );
+    let before_expiry = start(&mut clients.peer(NOW).unwrap(), 103);
+    assert_eq!(
+        decode_client_hello(client_hello(&before_expiry))
+            .unwrap()
+            .session_id,
+        id
+    );
+    let at_expiry = start(&mut clients.peer(NOW).unwrap(), 104);
+    assert!(
+        decode_client_hello(client_hello(&at_expiry))
+            .unwrap()
+            .session_id
+            .is_empty()
+    );
 }

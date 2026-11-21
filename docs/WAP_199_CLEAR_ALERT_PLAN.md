@@ -1,7 +1,7 @@
 # WAP-199 clear alert handling
 
-**WTLS-219 · Ruflo-reviewed design.** G3 covers receiving clear alerts
-in the scoped server-authenticated UDP profile. Implementation is pending. [WAP-199 evidence matrix](WAP_199_EVIDENCE_MATRIX.md#g3-alert-scope)
+**WTLS-219 · Verified at `0d49c5a`.** G3 covers receiving clear alerts
+in the scoped server-authenticated UDP profile. [WAP-199 evidence matrix](WAP_199_EVIDENCE_MATRIX.md#g3-alert-scope)
 
 ## What the specification requires
 
@@ -22,14 +22,13 @@ state from a single clear message and checking a clear alert's checksum
 before accepting its sequence number. Section 10.2.1 defines the separate
 closure-notification exchange and session invalidation. [WAP-199 §§10.2–10.2.2 and Appendix B.4](https://www.openmobilealliance.org/tech/affiliates/wap/Technical_June2000-20021106%5B1%5D.zip)
 
-The current clear receive branch checks an expected sequence and decodes
-the alert, then returns `PeerAlert(Clear)` without checksum validation.
-It leaves a pending handshake open even for a matching fatal. A protected
+Before WTLS-219, the clear receive branch reported a decoded alert
+without checksum validation and left a pending peer open on a matching fatal. A protected
 alert already checks the checksum against sent records and follows the
-authenticated receive-epoch rules. [Clear receive branch](../src/wire.rs#L723) ·
-[Protected alert receive path](../src/wire.rs#L928)
+authenticated receive-epoch rules. [Clear receive branch](../src/wire.rs#L767) ·
+[Protected alert receive path](../src/wire.rs#L972)
 
-## Proposed profile behavior
+## Profile behavior
 
 Process a well-framed, standalone clear alert while a pending negotiation
 is still receiving clear records. Require a checksum matching a complete
@@ -65,10 +64,10 @@ usual. [Adapter retirement](../src/udp.rs#L316) · [Existing cache policy](WIRE_
 The existing protected-epoch rules also cover provisional authentication
 and remain the authority for protected alerts. Specialized `time_required`
 timer behavior and new outbound certificate or error alerts are separate
-work. [Protected epoch check](../src/wire.rs#L655) ·
-[Local certificate rejection](../src/wire.rs#L401)
+work. [Protected epoch check](../src/wire.rs#L670) ·
+[Local certificate rejection](../src/wire.rs#L416)
 
-## Deterministic test plan
+## Deterministic tests
 
 Use only local in-memory peers and fixtures with fixed clocks.
 
@@ -81,8 +80,7 @@ Use only local in-memory peers and fixtures with fixed clocks.
 | Advisory and protected-only meanings | A matching clear warning preserves the pending deadline. Clear close notifications and a clear duplicate-Finished warning leave cache and confirmation state intact. |
 | Committed receive state and protected regression | A committed full connection and an abbreviated client awaiting confirmation retain their state on clear observations. Protected traffic still flows. Keep the existing protected fatal, critical and Session close tests and add a server-side generic critical case to verify closure with cache retention. |
 
-Start with a failing regression for a matched clear fatal that previously
-left the peer negotiating. Update the existing clear-alert fixtures for
-the checked receive behavior. Use the outbound checksum and protected
-lifecycle tests as controls. [TRUST-03 outbound checksum test](../tests/provisioned_trust.rs#L400) ·
-[Current alert lifecycle tests](../src/wire/alert_tests.rs#L254)
+The first regression reproduced a matched clear fatal leaving the peer
+negotiating. The verified suite covers the checked receive behavior and
+retains outbound checksum and protected lifecycle controls. [TRUST-03 outbound checksum test](../tests/provisioned_trust.rs#L400) ·
+[Current alert lifecycle tests](../src/wire/alert_tests.rs#L565)

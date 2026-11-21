@@ -102,7 +102,17 @@ cargo test --locked --offline --test provisioned_trust
 
 Use `WirePeer::status()` while driving the handshake and `WirePeer::connection_info()` after establishment. It reports the WAP-199 negotiated identifiers and the verification performed on the remote identity from that endpoint. In this profile the client verifies the server certificate and the server has no authenticated client identity.
 
-The wire peer returns `WireError::PeerAlert` for clear observations during negotiation and for valid peer alerts outside the supported close and commit acknowledgement paths. On the authenticated profile, a checksum-matched critical or fatal alert in the committed receive epoch also closes the association. Callers can inspect `status()` after the diagnostic. Critical preserves the cached session and fatal invalidates its exact cache entry. A clear observation leaves association and cache state intact. Protected close notifications continue to produce `WireAction::Closed` and their normal acknowledgements.
+On the authenticated profile, the wire peer checks a clear alert against a
+complete record sent during the pending negotiation. A matched fatal or
+critical error can close that attempt while preserving a verified cached
+session. Matched clear warnings and well-leveled clear closure notifications
+remain diagnostic observations. Once the receive epoch is committed, clear
+alerts are rejected. A checksum-matched authenticated critical or fatal
+alert in the committed receive epoch closes the association. Critical
+preserves the cached session and fatal invalidates its exact cache entry.
+Callers can inspect `status()` after `WireError::PeerAlert`. Protected
+closure notifications continue to produce `WireAction::Closed` and their
+normal acknowledgements. [Clear alert policy and evidence](docs/WAP_199_CLEAR_ALERT_PLAN.md)
 
 Use `DatagramBudget::check` on a complete encoded `WireAction::Send` payload before sending it. The size error includes the encoded byte count and the transport's configured limit. Drivers own delivery observations and must supply them when available. WSP session establishment and origin retrieval are reported by their respective layers.
 

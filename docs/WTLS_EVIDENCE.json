@@ -252,9 +252,19 @@
     {
       "id": "WTLS-CL-FULL-FINAL-FLIGHT-RETRY",
       "workItem": "WTLS-216",
-      "status": "open",
+      "status": "verified",
       "source": "WAP-199-WTLS-20000218-a §10.4, with WAP-199_103 rows S-006/C-006",
-      "statement": "During a full UDP handshake, loss of the final server CCS/Finished SDU triggers byte-identical retransmission of the entire client commit at its deadline and byte-identical retransmission of the server commit in response. The recovered association carries protected application data."
+      "statement": "During a full UDP handshake, loss of the final server CCS/Finished SDU triggers byte-identical retransmission of the entire client commit at its deadline and byte-identical retransmission of the server commit in response. The recovered association carries protected application data.",
+      "evidence": {
+        "verifiedCommit": "e166de4d4dbd6b75a30748fca53f9de15101d847",
+        "claimId": "7cf782aa362e4c38beae4bd8b82d4eb7",
+        "localReceipt": "ruflo-wtls-loop/7cf782aa362e4c38beae4bd8b82d4eb7/receipt.json",
+        "tests": "tests/udp_adapter.rs",
+        "scenarios": [
+          "lost_final_server_finished_flight_retries_and_echoes_protected_data"
+        ],
+        "scope": "Exact Ruflo review and 108 Rust tests. The deterministic adapter link dropped only the final server CCS/Finished datagram of a full handshake. It verified the exact client retry deadline, byte-identical client and server SDUs, no duplicate establishment, and protected application echo after recovery."
+      }
     }
   ]
 }

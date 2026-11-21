@@ -710,17 +710,26 @@ fn datagram_budget_checks_the_encoded_flight_length() {
 }
 
 #[test]
-fn a_clear_peer_alert_is_reported_without_trusting_or_closing_the_association() {
+fn matching_clear_alert_fatal_ends_pending_client_negotiation() {
     use wtls_lab::wire::{AlertFields, AlertProtection};
 
     let (mut client, _) = peers(SUBJECT);
-    client.start(0).unwrap();
+    let hello = send(&client.start(0).unwrap());
+    let checksum = hello
+        .chunks(4)
+        .fold(0u32, |sum, chunk| {
+            let mut word = [0; 4];
+            word[..chunk.len()].copy_from_slice(chunk);
+            sum ^ u32::from_be_bytes(word)
+        })
+        .to_be_bytes();
+    let fragment = [vec![3, 10], checksum.to_vec()].concat();
     let alert = wtls_lab::encode_datagram(&[wtls_lab::Record {
         content_type: RecordType::Alert,
         cipher_spec: CipherSpec::Null,
         sequence: 0,
         length_form: wtls_lab::LengthForm::Explicit,
-        fragment: &[3, 10, 0, 0, 0, 0],
+        fragment: &fragment,
     }])
     .unwrap();
     assert_eq!(
@@ -729,11 +738,12 @@ fn a_clear_peer_alert_is_reported_without_trusting_or_closing_the_association() 
             fields: AlertFields {
                 level: 3,
                 description: 10,
-                checksum: [0; 4]
+                checksum,
             },
             protection: AlertProtection::Clear,
         })
     );
-    assert_eq!(client.status(), Status::Negotiating);
-    assert_eq!(client.deadline(), Some(10));
+    assert_eq!(client.status(), Status::Closed);
+    assert_eq!(client.deadline(), None);
+    assert!(client.tick(10).unwrap().is_empty());
 }

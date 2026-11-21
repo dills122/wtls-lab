@@ -57,6 +57,7 @@ use crate::{
 const ALERT_WARNING: u8 = 1;
 const ALERT_CRITICAL: u8 = 2;
 const ALERT_FATAL: u8 = 3;
+const ALERT_NO_CONNECTION: u8 = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WireError {
@@ -348,6 +349,20 @@ impl WirePeer {
         }
 
         let mut incoming = match self.decode(bytes, monotonic_ms) {
+            Err(
+                error @ WireError::PeerAlert {
+                    fields,
+                    protection: AlertProtection::Clear,
+                },
+            ) if !matches!(self.side, Side::LegacyServer(_)) => {
+                if fields.supported_alert()?.is_none()
+                    && matches!(fields.level, ALERT_CRITICAL | ALERT_FATAL)
+                {
+                    self.handshake.abort();
+                    self.release_session(false)?;
+                }
+                return Err(error);
+            }
             Err(
                 error @ WireError::PeerAlert {
                     fields,
@@ -720,6 +735,35 @@ impl WirePeer {
         for framed in records {
             let (record_start, offset, record) = framed?;
             last_record = Some((record_start, offset, record));
+            if record.content_type == RecordType::Alert
+                && record.cipher_spec == CipherSpec::Null
+                && !matches!(self.side, Side::LegacyServer(_))
+            {
+                if read.protected
+                    || self.status() != Status::Negotiating
+                    || record_start != 0
+                    || offset != bytes.len()
+                {
+                    return Err(WireError::InvalidRecord);
+                }
+                let fields = decode_alert_fields(record.fragment)?;
+                if !self.sent_checksums.contains(&fields.checksum) {
+                    return Err(WireError::AuthenticationFailed);
+                }
+                if !matches!(fields.level, ALERT_WARNING | ALERT_CRITICAL | ALERT_FATAL) {
+                    return Err(WireError::InvalidMessage);
+                }
+                let no_connection = fields.description == ALERT_NO_CONNECTION
+                    && matches!(fields.level, ALERT_CRITICAL | ALERT_FATAL);
+                if !no_connection && u32::from(record.sequence) != read.sequence {
+                    return Err(WireError::InvalidRecord);
+                }
+                // Report the alert without committing a receive sequence.
+                return Err(WireError::PeerAlert {
+                    fields,
+                    protection: AlertProtection::Clear,
+                });
+            }
             let message = match (read.protected, record.cipher_spec) {
                 (false, CipherSpec::Null)
                     if record.sequence == read.next().ok_or(WireError::InvalidRecord)? =>

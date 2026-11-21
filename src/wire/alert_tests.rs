@@ -114,6 +114,30 @@ fn alert_fields(level: u8, description: u8, checksum: [u8; 4]) -> [u8; 6] {
     [level, description, a, b, c, d]
 }
 
+fn clear_alert(sequence: u16, fragment: &[u8]) -> Vec<u8> {
+    crate::encode_datagram(&[Record {
+        content_type: RecordType::Alert,
+        cipher_spec: CipherSpec::Null,
+        sequence,
+        length_form: LengthForm::Explicit,
+        fragment,
+    }])
+    .unwrap()
+}
+
+fn first_record_checksum(datagram: &[u8]) -> [u8; 4] {
+    let records = crate::decode_datagram(datagram).unwrap();
+    assert!(records.len() > 1);
+    datagram[..records[0].wire_len()]
+        .chunks(4)
+        .fold(0u32, |checksum, chunk| {
+            let mut word = [0; 4];
+            word[..chunk.len()].copy_from_slice(chunk);
+            checksum ^ u32::from_be_bytes(word)
+        })
+        .to_be_bytes()
+}
+
 fn protected_alert(peer: &mut WirePeer, fragment: &[u8]) -> Vec<u8> {
     assert!(peer.write.protected);
     let sequence = peer.write.next().unwrap();
@@ -132,6 +156,293 @@ fn assert_delivers(from: &mut WirePeer, to: &mut WirePeer, at: u64) {
     let bytes = send(&from.send_application(data.to_vec()).unwrap());
     let actions = to.receive(&bytes, at).unwrap();
     assert!(actions.contains(&WireAction::Deliver(data.to_vec())));
+}
+
+#[test]
+fn clear_alert_critical_can_reference_the_first_record_of_a_full_server_flight() {
+    let (clients, servers) = contexts();
+    let mut client = clients.peer(NOW).unwrap();
+    let mut server = servers.peer(NOW).unwrap();
+    let offer = send(&client.start(0).unwrap());
+    let flight = send(&server.receive(&offer, 1).unwrap());
+    let fragment = alert_fields(CRITICAL, HANDSHAKE_FAILURE, first_record_checksum(&flight));
+    let commit = send(&client.receive(&flight, 2).unwrap());
+
+    assert_eq!(
+        server.receive(&clear_alert(1, &fragment), 3),
+        Err(alert_error(&fragment, AlertProtection::Clear))
+    );
+    assert_eq!(server.status(), Status::Closed);
+    assert_eq!(server.deadline(), None);
+    assert!(server.receive(&commit, 4).unwrap().is_empty());
+    assert!(server.tick(30).unwrap().is_empty());
+}
+
+#[test]
+fn clear_alert_rejections_leave_the_expected_full_flight_usable() {
+    let (clients, servers) = contexts();
+    // Fixed, distinct ClientHello randoms give two valid attempts with
+    // different, nonzero complete-record checksums.
+    let fixed_offer = |peer: &mut WirePeer, last_byte| {
+        let mut random = [0; 16];
+        random[..4].copy_from_slice(&NOW.to_be_bytes());
+        random[15] = last_byte;
+        let actions = peer.handshake.start(random, 0).unwrap();
+        peer.random = Some(random);
+        send(&peer.apply(actions).unwrap())
+    };
+    let previous_offer = fixed_offer(&mut clients.peer(NOW).unwrap(), 1);
+    let mut client = clients.peer(NOW).unwrap();
+    let mut server = servers.peer(NOW).unwrap();
+    let offer = fixed_offer(&mut client, 2);
+    let checksum = record_checksum(&offer);
+    let previous = record_checksum(&previous_offer);
+    assert_ne!(checksum, previous);
+    assert_ne!(checksum, [0; 4]);
+    let mut wrong = checksum;
+    wrong[0] ^= 1;
+    let flight = send(&server.receive(&offer, 1).unwrap());
+    let fragment = alert_fields(FATAL, HANDSHAKE_FAILURE, checksum);
+    let clear = clear_alert(0, &fragment);
+
+    for (received, expected) in [
+        (
+            clear_alert(0, &alert_fields(FATAL, HANDSHAKE_FAILURE, wrong)),
+            WireError::AuthenticationFailed,
+        ),
+        (
+            clear_alert(0, &alert_fields(FATAL, HANDSHAKE_FAILURE, previous)),
+            WireError::AuthenticationFailed,
+        ),
+        (
+            clear_alert(0, &alert_fields(FATAL, HANDSHAKE_FAILURE, [0; 4])),
+            WireError::AuthenticationFailed,
+        ),
+        (clear_alert(1, &fragment), WireError::InvalidRecord),
+        (clear_alert(0, &fragment[..5]), WireError::InvalidMessage),
+        (
+            [clear.as_slice(), &flight].concat(),
+            WireError::InvalidRecord,
+        ),
+        (
+            [flight.as_slice(), &clear].concat(),
+            WireError::InvalidRecord,
+        ),
+    ] {
+        assert_eq!(client.receive(&received, 2), Err(expected));
+        assert_eq!(client.status(), Status::Negotiating);
+        assert_eq!(client.deadline(), Some(10));
+    }
+    let malformed = [clear.as_slice(), &TRUNCATED_ALERT].concat();
+    assert_eq!(
+        client.receive(&malformed, 2),
+        Err(WireError::Decode(
+            crate::decode_datagram(&malformed).unwrap_err()
+        ))
+    );
+
+    assert_eq!(client.tick(10).unwrap(), [WireAction::Send(offer)]);
+    let commit = send(&client.receive(&flight, 11).unwrap());
+    let reply = send(&server.receive(&commit, 12).unwrap());
+    assert_eq!(
+        client.receive(&reply, 13).unwrap(),
+        [WireAction::Established(HandshakeKind::Full)]
+    );
+    assert_delivers(&mut client, &mut server, 14);
+}
+
+#[test]
+fn clear_alert_no_connection_checks_the_checksum_before_exempting_sequence() {
+    let (clients, _) = contexts();
+    for (level, sequence) in [(FATAL, u16::MAX), (CRITICAL, 42)] {
+        let mut client = clients.peer(NOW).unwrap();
+        let offer = send(&client.start(0).unwrap());
+        let checksum = record_checksum(&offer);
+        let mut wrong = checksum;
+        wrong[0] ^= 1;
+        assert_eq!(
+            client.receive(&clear_alert(sequence, &alert_fields(level, 5, wrong)), 1),
+            Err(WireError::AuthenticationFailed)
+        );
+        assert_eq!(client.status(), Status::Negotiating);
+        assert_eq!(client.deadline(), Some(10));
+        let fragment = alert_fields(level, 5, checksum);
+        assert_eq!(
+            client.receive(&clear_alert(sequence, &fragment), 2),
+            Err(alert_error(&fragment, AlertProtection::Clear))
+        );
+        assert_eq!(client.status(), Status::Closed);
+        assert_eq!(client.deadline(), None);
+        assert!(client.tick(10).unwrap().is_empty());
+    }
+}
+
+#[test]
+fn clear_alert_aborts_both_pending_resumption_roles_and_preserves_original_expiry() {
+    let (clients, servers) = contexts();
+    let id = full(
+        &mut clients.peer(NOW).unwrap(),
+        &mut servers.peer(NOW).unwrap(),
+        0,
+    );
+    let mut client = clients.peer(NOW).unwrap();
+    let mut server = servers.peer(NOW).unwrap();
+    let offer = send(&client.start(10).unwrap());
+    assert_eq!(offered_id(&offer), id.0);
+    let flight = send(&server.receive(&offer, 11).unwrap());
+    assert_eq!(crate::decode_datagram(&flight).unwrap().len(), 3);
+    assert!(server.traffic.is_some());
+    assert!(server.session.is_some());
+    assert!(client.session.is_some());
+
+    let fatal = alert_fields(FATAL, HANDSHAKE_FAILURE, record_checksum(&offer));
+    let critical = alert_fields(CRITICAL, UNKNOWN_KEY_ID, first_record_checksum(&flight));
+    for (peer, sequence, fragment) in [(&mut client, 0, fatal), (&mut server, 1, critical)] {
+        assert_eq!(
+            peer.receive(&clear_alert(sequence, &fragment), 12),
+            Err(alert_error(&fragment, AlertProtection::Clear))
+        );
+        assert_eq!(peer.status(), Status::Closed);
+        assert_eq!(peer.deadline(), None);
+        assert!(peer.tick(30).unwrap().is_empty());
+        assert!(peer.traffic.is_none());
+        assert!(peer.session.is_none());
+    }
+
+    let mut client = clients.peer(NOW).unwrap();
+    let mut server = servers.peer(NOW).unwrap();
+    let commit = begin_resume(&mut client, &mut server, id, 40);
+    assert!(
+        server
+            .receive(&commit, 43)
+            .unwrap()
+            .contains(&WireAction::Established(HandshakeKind::Resumed))
+    );
+    assert_delivers(&mut server, &mut client, 44);
+    assert_delivers(&mut client, &mut server, 45);
+    assert!(server.find_session(Some(id), 1002).unwrap().is_some());
+    assert!(server.find_session(Some(id), 1003).unwrap().is_none());
+    assert!(client.find_session(Some(id), 1003).unwrap().is_some());
+    assert!(client.find_session(Some(id), 1004).unwrap().is_none());
+}
+
+#[test]
+fn clear_alert_advisories_preserve_deadline_cache_and_confirmation() {
+    let (clients, servers) = contexts();
+    let id = full(
+        &mut clients.peer(NOW).unwrap(),
+        &mut servers.peer(NOW).unwrap(),
+        0,
+    );
+    let mut client = clients.peer(NOW).unwrap();
+    let mut server = servers.peer(NOW).unwrap();
+    let offer = send(&client.start(10).unwrap());
+    let checksum = record_checksum(&offer);
+    for (level, description) in [(WARNING, 11), (CRITICAL, 0), (FATAL, 1), (WARNING, 57)] {
+        let advisory = alert_fields(level, description, checksum);
+        assert_eq!(
+            client.receive(&clear_alert(0, &advisory), 11),
+            Err(alert_error(&advisory, AlertProtection::Clear))
+        );
+        assert_eq!(client.status(), Status::Negotiating);
+        assert_eq!(client.deadline(), Some(20));
+        assert!(client.find_session(Some(id), 11).unwrap().is_some());
+    }
+    for (level, description) in [
+        (FATAL, 0),
+        (WARNING, 0),
+        (CRITICAL, 1),
+        (WARNING, 1),
+        (0, 40),
+        (4, 40),
+    ] {
+        let invalid = alert_fields(level, description, checksum);
+        assert_eq!(
+            client.receive(&clear_alert(0, &invalid), 11),
+            Err(WireError::InvalidMessage)
+        );
+    }
+    let warning = alert_fields(WARNING, 5, checksum);
+    assert_eq!(
+        client.receive(&clear_alert(42, &warning), 11),
+        Err(WireError::InvalidRecord)
+    );
+    assert_eq!(client.tick(20).unwrap(), [WireAction::Send(offer.clone())]);
+    let resumed = send(&server.receive(&offer, 21).unwrap());
+    let actions = client.receive(&resumed, 22).unwrap();
+    assert!(actions.contains(&WireAction::Established(HandshakeKind::Resumed)));
+    let commit = send(&actions);
+    assert_eq!(client.status(), Status::AwaitingConfirmation);
+    let deadline = client.deadline();
+    for (level, description, sequence) in [(WARNING, 57, 1), (FATAL, 1, 1), (FATAL, 5, u16::MAX)] {
+        let fragment = alert_fields(level, description, checksum);
+        assert_eq!(
+            client.receive(&clear_alert(sequence, &fragment), 23),
+            Err(WireError::InvalidRecord)
+        );
+        assert_eq!(client.status(), Status::AwaitingConfirmation);
+        assert_eq!(client.deadline(), deadline);
+        assert!(client.find_session(Some(id), 23).unwrap().is_some());
+    }
+    assert!(
+        server
+            .receive(&commit, 24)
+            .unwrap()
+            .contains(&WireAction::Established(HandshakeKind::Resumed))
+    );
+    assert_delivers(&mut server, &mut client, 25);
+    assert_eq!(client.status(), Status::Open);
+    assert_delivers(&mut client, &mut server, 26);
+}
+
+#[test]
+fn clear_alert_is_rejected_in_a_committed_full_receive_epoch() {
+    let (clients, servers) = contexts();
+    let mut client = clients.peer(NOW).unwrap();
+    let mut server = servers.peer(NOW).unwrap();
+    let id = full(&mut client, &mut server, 0);
+
+    let fragment = alert_fields(FATAL, 5, server.last_received);
+    assert_eq!(
+        client.receive(&clear_alert(u16::MAX, &fragment), 5),
+        Err(WireError::InvalidRecord)
+    );
+    assert_eq!(client.status(), Status::Open);
+    assert!(client.find_session(Some(id), 5).unwrap().is_some());
+    assert_delivers(&mut server, &mut client, 6);
+    assert_delivers(&mut client, &mut server, 7);
+}
+
+#[test]
+fn clear_alert_is_rejected_but_protected_generic_critical_closes_the_server() {
+    let (clients, servers) = contexts();
+    let mut client = clients.peer(NOW).unwrap();
+    let mut server = servers.peer(NOW).unwrap();
+    let id = full(&mut client, &mut server, 0);
+    let fragment = alert_fields(CRITICAL, HANDSHAKE_FAILURE, client.last_received);
+    assert_eq!(
+        server.receive(&clear_alert(0, &fragment), 5),
+        Err(WireError::InvalidRecord)
+    );
+    assert_eq!(server.status(), Status::Open);
+    let alert = protected_alert(&mut client, &fragment);
+    assert_eq!(
+        server.receive(&alert, 5),
+        Err(alert_error(&fragment, AlertProtection::Authenticated))
+    );
+    assert_eq!(server.status(), Status::Closed);
+    assert!(server.traffic.is_none());
+    assert!(server.session.is_none());
+    assert!(server.find_session(Some(id), 5).unwrap().is_some());
+    assert_eq!(client.status(), Status::Open);
+    let mut new_server = servers.peer(NOW).unwrap();
+    let commit = begin_resume(&mut clients.peer(NOW).unwrap(), &mut new_server, id, 10);
+    assert!(
+        new_server
+            .receive(&commit, 13)
+            .unwrap()
+            .contains(&WireAction::Established(HandshakeKind::Resumed))
+    );
 }
 
 #[test]
@@ -260,31 +571,7 @@ fn warning_and_unverified_alerts_preserve_the_association_and_critical_preserves
     );
     let mut client = clients.peer(NOW).unwrap();
     let mut server = servers.peer(NOW).unwrap();
-    let offer = send(&client.start(10).unwrap());
-    let clear_fragment = alert_fields(FATAL, HANDSHAKE_FAILURE, record_checksum(&offer));
-    let clear = crate::encode_datagram(&[Record {
-        content_type: RecordType::Alert,
-        cipher_spec: CipherSpec::Null,
-        sequence: 0,
-        length_form: LengthForm::Explicit,
-        fragment: &clear_fragment,
-    }])
-    .unwrap();
-    assert_eq!(
-        client.receive(&clear, 11),
-        Err(alert_error(&clear_fragment, AlertProtection::Clear))
-    );
-    assert_eq!(client.status(), Status::Negotiating);
-    let malformed = [clear.as_slice(), &TRUNCATED_ALERT].concat();
-    assert_eq!(
-        client.receive(&malformed, 11),
-        Err(WireError::Decode(
-            crate::decode_datagram(&malformed).unwrap_err()
-        ))
-    );
-
-    let hello = send(&server.receive(&offer, 12).unwrap());
-    let commit = send(&client.receive(&hello, 13).unwrap());
+    let commit = begin_resume(&mut client, &mut server, id, 11);
     assert!(
         server
             .receive(&commit, 14)
@@ -293,7 +580,6 @@ fn warning_and_unverified_alerts_preserve_the_association_and_critical_preserves
     );
     assert_delivers(&mut server, &mut client, 15);
     assert_eq!(client.status(), Status::Open);
-    assert_eq!(client.receive(&clear, 16), Err(WireError::InvalidRecord));
 
     let checksum = server.last_received;
     let warning = alert_fields(WARNING, NO_RENEGOTIATION, checksum);

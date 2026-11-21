@@ -354,6 +354,61 @@ fn assert_protected_echo(link: &mut Link, client: &mut Adapter, server: &mut Ada
 }
 
 #[test]
+fn matching_clear_alert_retires_a_pending_udp_slot_on_receive() {
+    use wtls_lab::wire::{AlertFields, AlertProtection, WireError};
+    use wtls_lab::{LengthForm, Record, encode_datagram};
+
+    let (clients, servers) = contexts();
+    let mut client = adapter(None, 1);
+    let mut other = adapter(None, 1);
+    let mut server = adapter(Some(servers), 1);
+    let mut link = Link::default();
+    let other_addr = SocketAddr::new(CLIENT_ADDR.ip(), CLIENT_ADDR.port() + 1);
+
+    link.send(client.connect(SERVER_ADDR, &clients, WALL, 0));
+    let offer = link.take(SERVER_ADDR);
+    link.send(server.receive(CLIENT_ADDR, &offer, WALL, 1));
+    let flight = link.take(CLIENT_ADDR);
+    assert_eq!(server.status(CLIENT_ADDR), Some(Status::Negotiating));
+    link.send(other.connect(SERVER_ADDR, &clients, WALL, 2));
+    let other_offer = link.take(SERVER_ADDR);
+    assert!(matches!(
+        server.receive(other_addr, &other_offer, WALL, 2).as_slice(),
+        [Event::Diagnostic { remote, reason: Diagnostic::AtCapacity }] if *remote == other_addr
+    ));
+
+    let first = decode_datagram(&flight).unwrap()[0];
+    let mut checksum = [0; 4];
+    for (index, &byte) in flight[..first.wire_len()].iter().enumerate() {
+        checksum[index % 4] ^= byte;
+    }
+    let [a, b, c, d] = checksum;
+    let alert = encode_datagram(&[Record {
+        content_type: RecordType::Alert,
+        cipher_spec: CipherSpec::Null,
+        sequence: 1,
+        length_form: LengthForm::Explicit,
+        fragment: &[3, 40, a, b, c, d],
+    }])
+    .unwrap();
+    assert!(matches!(
+        server.receive(CLIENT_ADDR, &alert, WALL, 4).as_slice(),
+        [Event::Diagnostic {
+            remote,
+            reason: Diagnostic::Protocol(WireError::PeerAlert {
+                fields: AlertFields { level: 3, description: 40, checksum: reported },
+                protection: AlertProtection::Clear,
+            }),
+        }] if *remote == CLIENT_ADDR && *reported == checksum
+    ));
+    assert_eq!(server.status(CLIENT_ADDR), None);
+    assert_eq!(server.deadline(), None);
+    let events = server.receive(other_addr, &other_offer, WALL, 4);
+    assert!(matches!(events.as_slice(), [Event::Send { remote, .. }] if *remote == other_addr));
+    assert_eq!(server.status(other_addr), Some(Status::Negotiating));
+}
+
+#[test]
 fn pending_client_hello_replaces_full_handshake_at_capacity() {
     let (clients, servers) = contexts();
     let mut a = adapter(None, 1);

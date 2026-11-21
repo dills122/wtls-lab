@@ -86,7 +86,7 @@ an error into a diagnostic and emits datagrams from successful wire actions.
    generation, live historical runs, and same-tuple open recovery out of
    this slice.
 
-Approval of the slice and a review of how the receive API reports the
-diagnostic and output belong before implementation. Reuse deterministic
-wire and UDP checks in the supervised Ruflo workflow.
+The proposed WTLS-221 mapping, receive API, and deterministic tests
+are ready for approval before implementation.
+[Certificate alert design](WAP_199_CERTIFICATE_ALERT_PLAN.md) ·
 [Supervised verification](SUPERVISED_WORKFLOW.md#run-the-wtls-loop)

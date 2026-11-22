@@ -68,10 +68,14 @@ impl Entry {
     }
 }
 
-struct ClientFlight {
+struct ObservedDatagram {
     event: usize,
     elapsed_us: u64,
     bytes: Vec<u8>,
+}
+
+struct ObservedClientHello {
+    datagram: ObservedDatagram,
     key_exchanges: Vec<u8>,
 }
 
@@ -85,9 +89,47 @@ fn clear_client_hello(bytes: &[u8]) -> Option<ClientHello<'_>> {
     decode_client_hello(record.fragment).ok()
 }
 
+fn is_full_client_commit(bytes: &[u8]) -> bool {
+    let Ok(exchange) = decode_record_envelope(bytes) else {
+        return false;
+    };
+    if exchange.cipher_spec() != CipherSpec::Null
+        || exchange.content_type() != Ok(RecordType::Handshake)
+    {
+        return false;
+    }
+    // Check the complete ClientKeyExchange handshake frame without choosing a key exchange profile.
+    let [16, high, low, body @ ..] = exchange.fragment else {
+        return false;
+    };
+    if body.is_empty() || usize::from(u16::from_be_bytes([*high, *low])) != body.len() {
+        return false;
+    }
+
+    let remaining = &bytes[exchange.wire_len()..];
+    let Ok(change) = decode_record_envelope(remaining) else {
+        return false;
+    };
+    if change.cipher_spec() != CipherSpec::Null
+        || change.content_type() != Ok(RecordType::ChangeCipherSpec)
+        || change.fragment != [1]
+    {
+        return false;
+    }
+
+    let remaining = &remaining[change.wire_len()..];
+    // The envelope decoder requires a nonempty fragment. Leave its contents opaque.
+    decode_record_envelope(remaining).is_ok_and(|protected| {
+        protected.cipher_spec() == CipherSpec::Current
+            && protected.content_type() == Ok(RecordType::Handshake)
+            && protected.wire_len() == remaining.len()
+    })
+}
+
 pub(super) fn print_timeline(output: &mut impl Write, trace: &str) -> Result<(), Box<dyn Error>> {
     let mut last_elapsed_us = 0;
-    let mut client_flight: Option<ClientFlight> = None;
+    let mut client_hello: Option<ObservedClientHello> = None;
+    let mut client_commit: Option<ObservedDatagram> = None;
     let mut event = 0;
     for (index, line) in trace.lines().enumerate() {
         let line = line.split_once('#').map_or(line, |(data, _)| data).trim();
@@ -118,10 +160,12 @@ pub(super) fn print_timeline(output: &mut impl Write, trace: &str) -> Result<(),
                 write!(output, " payload-bytes={} delivery=captured", bytes.len())?;
                 let result = match direction {
                     Direction::Client => {
-                        let hello = clear_client_hello(&bytes);
-                        let duplicate = client_flight
+                        let duplicate = client_hello
                             .as_ref()
-                            .filter(|flight| flight.bytes == bytes);
+                            .map(|hello| &hello.datagram)
+                            .into_iter()
+                            .chain(client_commit.as_ref())
+                            .find(|datagram| datagram.bytes == bytes);
                         if let Some(previous) = duplicate {
                             writeln!(
                                 output,
@@ -133,28 +177,36 @@ pub(super) fn print_timeline(output: &mut impl Write, trace: &str) -> Result<(),
                             writeln!(output)?;
                         }
                         let result = inspect_datagram(output, &bytes, None);
-                        if result.is_ok()
-                            && duplicate.is_none()
-                            && let Some(hello) = hello
-                        {
-                            client_flight = Some(ClientFlight {
-                                event,
-                                elapsed_us,
-                                key_exchanges: hello
-                                    .key_exchanges
-                                    .into_iter()
-                                    .map(|offer| offer.suite)
-                                    .collect(),
-                                bytes,
-                            });
+                        if result.is_ok() && duplicate.is_none() {
+                            if let Some(hello) = clear_client_hello(&bytes) {
+                                client_hello = Some(ObservedClientHello {
+                                    key_exchanges: hello
+                                        .key_exchanges
+                                        .into_iter()
+                                        .map(|offer| offer.suite)
+                                        .collect(),
+                                    datagram: ObservedDatagram {
+                                        event,
+                                        elapsed_us,
+                                        bytes,
+                                    },
+                                });
+                                client_commit = None;
+                            } else if client_commit.is_none() && is_full_client_commit(&bytes) {
+                                client_commit = Some(ObservedDatagram {
+                                    event,
+                                    elapsed_us,
+                                    bytes,
+                                });
+                            }
                         }
                         result
                     }
                     Direction::Server => {
                         writeln!(output)?;
-                        let offers = client_flight
+                        let offers = client_hello
                             .as_ref()
-                            .map(|flight| flight.key_exchanges.as_slice());
+                            .map(|hello| hello.key_exchanges.as_slice());
                         inspect_datagram(output, &bytes, offers)
                     }
                 };

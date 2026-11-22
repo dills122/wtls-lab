@@ -48,10 +48,10 @@ protected page acknowledgment.
 ## Decision to review
 
 Keep handshake retry and final-flight retention in the protocol library.
-The adapter supplies clocks and transports datagrams. The inspector already shows drop markers and exact-byte ClientHello
-retries. The final-flight example needs the same byte comparison for
-client commits. A drop
-marker that carries only a length cannot establish whether a subsequent
+The adapter supplies clocks and transports datagrams. The inspector shows
+drop markers and annotates byte-identical ClientHello and full client
+commit datagrams. The annotations identify repeats within a capture.
+A drop marker that carries only a length cannot establish whether a subsequent
 server send repeats the withheld bytes. The lab tooling can provide that
 comparison when its relay retains the original bytes. The tools can also
 assemble endpoint and application outcomes alongside the capture.

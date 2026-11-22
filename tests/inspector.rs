@@ -127,14 +127,10 @@ fn both_capture_fixtures_remain_outside_the_engine_profile() {
     );
 }
 
-fn timeline(fixture: &str) -> String {
+fn timeline_at(path: &Path) -> String {
     let output = Command::new(env!("CARGO_BIN_EXE_wtls-inspect"))
         .arg("--timeline")
-        .arg(
-            Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("fixtures")
-                .join(fixture),
-        )
+        .arg(path)
         .output()
         .unwrap();
     assert!(
@@ -143,6 +139,21 @@ fn timeline(fixture: &str) -> String {
         String::from_utf8_lossy(&output.stderr)
     );
     String::from_utf8(output.stdout).unwrap()
+}
+
+fn timeline(fixture: &str) -> String {
+    timeline_at(
+        &Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("fixtures")
+            .join(fixture),
+    )
+}
+
+fn repeat_events(output: &str) -> Vec<&str> {
+    output
+        .lines()
+        .filter(|line| line.starts_with("event=") && line.contains(" repeat-of="))
+        .collect()
 }
 
 #[test]
@@ -171,4 +182,75 @@ fn timeline_distinguishes_observed_retries_alerts_and_relay_dispositions() {
     );
     assert!(limited.contains("repeat-of=1 elapsed-since-original-us=4991702"));
     assert!(limited.contains("description=unexpected-message(10)"));
+}
+
+#[test]
+fn timeline_matches_blackberry_commit_repeats() {
+    let final_drop = timeline("blackberry-7290-kwtls-drop-final.trace");
+    assert!(final_drop.lines().any(|line| line
+        == "event=4 elapsed-us=16131271 direction=server payload-bytes=51 delivery=relay-dropped"));
+    assert_eq!(
+        repeat_events(&final_drop),
+        [
+            "event=5 elapsed-us=22504230 direction=client payload-bytes=189 delivery=captured repeat-of=3 elapsed-since-original-us=6375935",
+            "event=6 elapsed-us=28678999 direction=client payload-bytes=189 delivery=captured repeat-of=3 elapsed-since-original-us=12550704",
+            "event=7 elapsed-us=34932264 direction=client payload-bytes=189 delivery=captured repeat-of=3 elapsed-since-original-us=18803969",
+            "event=8 elapsed-us=41189327 direction=client payload-bytes=189 delivery=captured repeat-of=3 elapsed-since-original-us=25061032",
+            "event=9 elapsed-us=47440662 direction=client payload-bytes=189 delivery=captured repeat-of=3 elapsed-since-original-us=31312367",
+        ],
+    );
+}
+
+#[test]
+fn timeline_preserves_blackberry_hello_repeats_and_cache_control() {
+    let first_drop = timeline("blackberry-7290-kwtls-drop-first.trace");
+    assert_eq!(
+        repeat_events(&first_drop),
+        [
+            "event=3 elapsed-us=233133015 direction=client payload-bytes=949 delivery=captured repeat-of=1 elapsed-since-original-us=5617711"
+        ],
+    );
+    assert!(repeat_events(&timeline("blackberry-7290-kwtls-cache-control.trace")).is_empty());
+}
+
+#[test]
+fn timeline_compares_opaque_commit_bytes_and_resets_on_a_fresh_hello() {
+    let capture = include_str!("../fixtures/blackberry-7290-kwtls-drop-final.trace");
+    let client_datagram = |line: &'static str| line.split_once(" client datagram ").unwrap().1;
+    let hello = client_datagram(capture.lines().next().unwrap());
+    let other_capture = include_str!("../fixtures/blackberry-7290-kwtls-drop-first.trace");
+    let fresh_hello = client_datagram(other_capture.lines().next().unwrap());
+    assert_ne!(fresh_hello, hello);
+    let commit = client_datagram(capture.lines().nth(2).unwrap());
+    let (prefix, last_byte) = commit.rsplit_once(' ').unwrap();
+    let changed_byte = u8::from_str_radix(last_byte, 16).unwrap() ^ 1;
+    let trace = format!(
+        "10 client datagram {commit}\n\
+         20 client datagram {prefix} {changed_byte:02x}\n\
+         30 client datagram {commit}\n\
+         40 client datagram {hello}\n\
+         50 client datagram {commit}\n\
+         60 client datagram {hello}\n\
+         70 client datagram {commit}\n\
+         80 client datagram {fresh_hello}\n\
+         90 client datagram {commit}\n\
+         100 client datagram {commit}\n"
+    );
+    let path = Path::new(env!("CARGO_BIN_EXE_wtls-inspect")).with_file_name(format!(
+        "inspector-commit-repeat-{}.trace",
+        std::process::id(),
+    ));
+    std::fs::write(&path, trace).unwrap();
+    let output = timeline_at(&path);
+    std::fs::remove_file(path).unwrap();
+
+    assert_eq!(
+        repeat_events(&output),
+        [
+            "event=3 elapsed-us=30 direction=client payload-bytes=189 delivery=captured repeat-of=1 elapsed-since-original-us=20",
+            "event=6 elapsed-us=60 direction=client payload-bytes=949 delivery=captured repeat-of=4 elapsed-since-original-us=20",
+            "event=7 elapsed-us=70 direction=client payload-bytes=189 delivery=captured repeat-of=5 elapsed-since-original-us=20",
+            "event=10 elapsed-us=100 direction=client payload-bytes=189 delivery=captured repeat-of=9 elapsed-since-original-us=10",
+        ],
+    );
 }

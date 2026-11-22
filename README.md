@@ -36,7 +36,7 @@ Each trace follows an endpoint pair in chronological order and can include a rec
 <elapsed-us> <client|server> over-limit <payload-bytes> <limit>
 ```
 
-The inspector resolves the ServerHello key exchange index against the observed ClientHello offers. It shows the cipher, MAC, compression, sequence mode and key refresh selected by the server. It marks byte-identical ClientHello datagrams and prints their time since the original. A capture records what was seen at its tap. Explicit relay rows supply drop or size-limit evidence. Negotiation is shown as observed and protected records remain opaque.
+The inspector resolves the ServerHello key exchange index against the observed ClientHello offers. It shows the cipher, MAC, compression, sequence mode and key refresh selected by the server. It marks byte-identical ClientHello and full client commit datagrams with `repeat-of` and `elapsed-since-original-us` relative to the first observed copy. A full client commit contains clear ClientKeyExchange, clear ChangeCipherSpec, and a protected handshake record in one datagram. A distinct observed ClientHello starts a new commit comparison. A capture records what was seen at its tap. Explicit relay rows supply drop or size-limit evidence. Negotiation is shown as observed and protected records remain opaque.
 
 The normal UDP 9203 trace comes from the first four packets of the isolated WinWAP 4.2.0.290 to Kannel 1.4.5 capture. The two retry traces combine UDP payloads from the delivery capture with the dropped-reply and over-limit rows from the relay log. Packet times use the capture clock. The relay rows retain millisecond precision. The 300-byte limit is the test relay's UDP payload budget.
 

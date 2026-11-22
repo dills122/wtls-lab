@@ -1,12 +1,11 @@
 # WAP-199 full final-flight application data review
 
-**DQ-08 · Proposed test plan.** The question is whether to check receive
-behavior for one initial, server-authenticated full handshake whose final
-UDP datagram carries clear ChangeCipherSpec (CCS), protected Finished,
-and one protected application record. The corrected text supports this
-grouping as a receive case. The saved captures leave historical use of
-the exact server grouping open. Review the tests before approving a
-runtime change.
+**DQ-08 · Verified in deterministic wire tests.** The initial,
+server-authenticated full client handshake accepts a final UDP datagram
+with clear ChangeCipherSpec (CCS), protected Finished, and one protected
+application record at sequence 1. The corrected text supports this
+receive case. Historical use of the exact server grouping remains open
+in the saved captures.
 
 ## Corrected specification
 
@@ -65,14 +64,13 @@ payload.
 [Abbreviated KWTLS comparison](../fixtures/blackberry-7290-kwtls-resumption.trace) ·
 [Capture provenance](KWTLS_LAB_BASELINE.md#live-key-refresh-on-one-connection)
 
-## Proposed verification
+## Deterministic verification
 
-If approved, use one deterministic, provisioned in-memory exchange on
-the existing RSA / 3DES-CBC-EDE / full SHA profile. Generate normal
-protected records in a test sender and group them at the test boundary.
-Use distinct records, one application payload, and the existing datagram
-budget. Historical ciphertext belongs to its original session. The
-captured DES-CBC datagrams remain framing evidence.
+The tests use a provisioned in-memory exchange on the existing RSA /
+3DES-CBC-EDE / full SHA profile. They generate normal protected records
+and group them at the test boundary, with one application payload and
+the existing datagram budget. The captured DES-CBC datagrams supply
+separate framing evidence.
 
 | Case | Expected result |
 | --- | --- |
@@ -81,16 +79,26 @@ captured DES-CBC datagrams remain framing evidence.
 | Exact combined flight repeated | Repeat the same datagram on the established association. Observe zero additional establishment and zero application delivery. A standalone repeat of the sequence 1 application record is also suppressed. A fresh sequence 2 record delivers normally, confirming the read state survived the repeat. |
 | Final application length omitted | Encode the final record with that length form from the start. Repeat the success check with the same sequence and event ordering under the existing G4 receive interpretation. |
 | Missing or misplaced CCS | Reject the grouping before establishment or delivery and keep the full handshake's normal response to an invalid flight. The existing typed test provides a server-side order check. |
-| Valid Finished with rejected application suffix | Proposed local policy follows G4. Stage the receive until the whole datagram passes validation. A suffix rejection leaves the handshake pending and retryable without installing a session or advancing replay state. Verify that the subsequent valid flight opens and delivers once. Review this policy explicitly before implementation. |
+| Valid Finished with rejected application suffix | Stage the receive until the whole datagram passes validation. A suffix rejection leaves the handshake pending and retryable without installing a session or advancing replay state. The subsequent valid flight opens and delivers once. |
 | Standalone final flight control | The existing G2 case still verifies byte-identical two-record final-flight retransmission followed by a protected echo. |
 
-The first three rows are the core checks. The length variant, CCS order,
-and invalid suffix cover the adjacent receive boundaries. G2 and G4
-provide regression controls. Agree on these outcomes before a wire-test
-or implementation slice. Revisit outbound coalescing when a concrete
-peer or transport measurement calls for it.
+The length variant and CCS order check cover the framing boundaries.
+G2 and G4 provide regression controls. This receive path shares the G4
+staging and application replay window. The server's existing standalone
+final flight remains the outbound path.
 
 [Finished failure alert](https://www.wapforum.org/tech/documents/WAP-199-WTLS-20000218-a.pdf#page=47) ·
 [Existing typed order and Finished check](../tests/handshake.rs#L326) ·
 [Existing full final-flight retry](WAP_199_EVIDENCE_MATRIX.md#g2-full-handshake-final-flight-retry) ·
 [Existing batched receive policy](WAP_199_APPLICATION_RECORD_BATCH_PLAN.md)
+
+## Executed results
+
+`cargo test --locked --offline dq08_` passed all seven cases. The
+unchanged receiver on test checkpoint `fdb5576` retained two passing
+controls and rejected five combined-flight cases. With DQ-08 receive
+support, a rejected application suffix leaves the initial handshake
+pending and a valid combined retry emits establishment before delivery.
+The full workspace passed 170 tests, including the G2 final-flight retry
+and G4 abbreviated and application-batch regressions.
+[DQ-08 tests](../src/wire/application_batch_tests.rs#L370)

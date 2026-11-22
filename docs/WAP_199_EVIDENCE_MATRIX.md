@@ -143,6 +143,11 @@ accepted sequence. Authenticated terminal alerts retain precedence and
 their existing close and cache effects. Existing BlackBerry exchanges
 exercise single-record traffic. Outbound batching and general
 content-type interleaving remain outside this profile.
+DQ-08 extends staged receive to the initial full client handshake when
+the final server datagram ends with one protected application record.
+The seven wire tests cover Finished gating, exact-repeat suppression,
+and valid combined retry after an invalid suffix.
+[Full final-flight evidence](WAP_199_FULL_FINAL_FLIGHT_REVIEW.md#executed-results)
 [Receive design and tests](WAP_199_APPLICATION_RECORD_BATCH_PLAN.md) ·
 [Wire batch tests](../src/wire/application_batch_tests.rs#L51) ·
 [UDP replay and budget](../tests/udp_adapter.rs#L277) ·

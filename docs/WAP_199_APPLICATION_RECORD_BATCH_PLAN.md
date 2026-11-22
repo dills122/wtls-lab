@@ -31,11 +31,12 @@ verification and retries.
 
 The wire layer frames and authenticates each protected record. The
 handshake layer admits a batch in established traffic and after an
-abbreviated client commit. The send API, record size limit, and UDP
-datagram budget are unchanged. Outbound batching, application data on
-full-handshake final flights, and general content-type interleaving
-remain separate scope.
+abbreviated client commit. DQ-08 applies the same staging policy to one
+application record on the full server final flight. The send API,
+record size limit, and UDP datagram budget are unchanged. Outbound
+batching and general content-type interleaving remain separate scope.
 [Open receive path](../src/handshake.rs#L794) ·
+[Full server final-flight receive](WAP_199_FULL_FINAL_FLIGHT_REVIEW.md) ·
 [Abbreviated commit](../src/handshake.rs#L658) ·
 [Datagram budget](../src/udp.rs#L216)
 

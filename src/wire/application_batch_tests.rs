@@ -237,3 +237,286 @@ fn application_batch_abbreviated_commit_and_exact_prefix_retry() {
     assert!(matches!(actions.as_slice(), [WireAction::Send(_)]));
     assert_eq!(server.last_received, record_checksum(fourth));
 }
+
+const DQ08_PAYLOAD: &[u8] = b"first server application";
+
+struct PendingFullFlight {
+    client: WirePeer,
+    server: WirePeer,
+    session_id: SessionId,
+    client_commit: Vec<u8>,
+    final_flight: Vec<u8>,
+    first_application: Vec<u8>,
+}
+
+impl PendingFullFlight {
+    fn new() -> Self {
+        let (clients, servers) = contexts();
+        let mut client = clients.peer(NOW).unwrap();
+        let mut server = servers.peer(NOW).unwrap();
+        let offer = send(&client.start(0).unwrap());
+        let hello = send(&server.receive(&offer, 1).unwrap());
+        let session_id = SessionId(
+            decode_server_hello(crate::decode_record(&hello).unwrap().fragment)
+                .unwrap()
+                .session_id
+                .try_into()
+                .unwrap(),
+        );
+        let client_commit = send(&client.receive(&hello, 2).unwrap());
+        let actions = server.receive(&client_commit, 3).unwrap();
+        assert!(actions.contains(&WireAction::Established(HandshakeKind::Full)));
+        let final_flight = send(&actions);
+        let first_application = application(&mut server, DQ08_PAYLOAD);
+
+        assert_eq!(client.status(), Status::Negotiating);
+        assert!(!client.read.protected);
+        assert!(client.find_session(None, 3).unwrap().is_none());
+
+        Self {
+            client,
+            server,
+            session_id,
+            client_commit,
+            final_flight,
+            first_application,
+        }
+    }
+
+    fn combined(&self, last: &[u8], last_length: LengthForm) -> Vec<u8> {
+        let combined = [self.final_flight.as_slice(), last].concat();
+        DatagramBudget::new(1200).check(&combined).unwrap();
+        // Successful datagram decoding requires an explicit sequence field on
+        // every record. The decoded lengths must leave exactly three records.
+        let records = crate::decode_datagram(&combined).unwrap();
+        let [ccs, finished, application] = records.as_slice() else {
+            panic!("expected CCS, Finished and one application record: {records:?}");
+        };
+        assert_eq!(ccs.content_type, RecordType::ChangeCipherSpec);
+        assert_eq!(ccs.cipher_spec, CipherSpec::Null);
+        assert_eq!(ccs.sequence, 3);
+        assert_eq!(ccs.length_form, LengthForm::Explicit);
+        assert_eq!(ccs.fragment, [1]);
+        assert_eq!(finished.content_type, RecordType::Handshake);
+        assert_eq!(finished.cipher_spec, CipherSpec::Current);
+        assert_eq!(finished.sequence, 0);
+        assert_eq!(finished.length_form, LengthForm::Explicit);
+        assert_eq!(
+            ccs.wire_len() + finished.wire_len(),
+            self.final_flight.len()
+        );
+        assert_eq!(application.content_type, RecordType::ApplicationData);
+        assert_eq!(application.cipher_spec, CipherSpec::Current);
+        assert_eq!(application.sequence, 1);
+        assert_eq!(application.length_form, last_length);
+        assert_eq!(application.wire_len(), last.len());
+        combined
+    }
+
+    fn explicit_combined(&self) -> Vec<u8> {
+        self.combined(&self.first_application, LengthForm::Explicit)
+    }
+
+    fn assert_uncached(&self, at: u64) {
+        assert!(self.client.session.is_none());
+        assert!(self.client.handshake.cached_session().is_none());
+        assert!(self.client.find_session(None, at).unwrap().is_none());
+    }
+
+    fn reject_invalid_suffix(&mut self) {
+        let last = invalid_integrity(&self.first_application);
+        let invalid = self.combined(&last, LengthForm::Explicit);
+        let receive_state = |client: &WirePeer| {
+            (
+                client.read.protected,
+                client.read.sequence,
+                client.last_received,
+                client.highest_received_sequence,
+                client.received_flights.len(),
+                client.verified_commit.is_some(),
+                client.deadline(),
+            )
+        };
+        let before = receive_state(&self.client);
+
+        assert_eq!(
+            self.client.receive(&invalid, 4),
+            Err(WireError::AuthenticationFailed)
+        );
+        assert_eq!(self.client.status(), Status::Negotiating);
+        assert_eq!(receive_state(&self.client), before);
+        self.assert_uncached(4);
+    }
+
+    fn receive_combined(&mut self, combined: &[u8], at: u64) {
+        assert_eq!(
+            self.client.receive(combined, at),
+            Ok(vec![
+                WireAction::Established(HandshakeKind::Full),
+                delivery(DQ08_PAYLOAD),
+            ])
+        );
+        assert_eq!(self.client.status(), Status::Open);
+        assert!(
+            self.client
+                .find_session(Some(self.session_id), at)
+                .unwrap()
+                .is_some()
+        );
+    }
+}
+
+#[test]
+fn dq08_explicit_combined_flight_establishes_before_delivery() {
+    let mut flight = PendingFullFlight::new();
+    let combined = flight.explicit_combined();
+    flight.receive_combined(&combined, 4);
+}
+
+#[test]
+fn dq08_bad_finished_proof_closes_pending_client_without_caching() {
+    let mut flight = PendingFullFlight::new();
+    let ccs_len = crate::decode_record(&flight.final_flight)
+        .unwrap()
+        .wire_len();
+    let (ccs, finished) = flight.final_flight.split_at(ccs_len);
+    let mut finished = record(finished);
+    let keys = flight.server.traffic.as_ref().unwrap();
+    let plaintext = keys.open(Role::Server, finished).unwrap();
+    let Message::Finished(mut proof) = decode_handshake(&plaintext).unwrap() else {
+        panic!("expected the server's Finished message");
+    };
+    proof[0] ^= 1;
+    let modified = encode_handshake(&Message::Finished(proof)).unwrap();
+    finished.fragment = &modified;
+    let ciphertext = keys.seal(Role::Server, finished).unwrap();
+    finished.fragment = &ciphertext;
+    let modified = crate::encode_datagram(&[finished]).unwrap();
+    let invalid = [ccs, &modified, &flight.first_application].concat();
+
+    // The real wire decoder still authenticates and parses both protected
+    // records. Only the Finished proof differs from the server's original.
+    assert_eq!(
+        flight.client.decode(&invalid, 4).unwrap().messages,
+        [
+            Message::ChangeCipherSpec,
+            Message::Finished(proof),
+            Message::ApplicationData {
+                sequence: 1,
+                payload: DQ08_PAYLOAD.to_vec(),
+            },
+        ]
+    );
+
+    let result = flight.client.receive(&invalid, 4);
+    flight.assert_uncached(4);
+    assert_eq!(result, Err(WireError::AuthenticationFailed));
+    assert_eq!(flight.client.status(), Status::Closed);
+    assert_eq!(flight.client.deadline(), None);
+
+    // Neither form of a late valid flight can reopen or cache the failed attempt.
+    let valid = flight.explicit_combined();
+    assert_eq!(flight.client.receive(&valid, 5).unwrap(), []);
+    assert_eq!(flight.client.receive(&flight.final_flight, 6).unwrap(), []);
+    assert_eq!(
+        flight.client.receive(&flight.first_application, 7).unwrap(),
+        []
+    );
+    assert_eq!(flight.client.status(), Status::Closed);
+    flight.assert_uncached(7);
+}
+
+#[test]
+fn dq08_combined_repeat_and_application_replay_deliver_only_fresh_sequence() {
+    let mut flight = PendingFullFlight::new();
+    let combined = flight.explicit_combined();
+    flight.receive_combined(&combined, 4);
+
+    assert_eq!(flight.client.receive(&combined, 5).unwrap(), []);
+    assert_eq!(
+        flight.client.receive(&flight.first_application, 6).unwrap(),
+        []
+    );
+
+    let fresh = application(&mut flight.server, b"fresh server application");
+    assert_eq!(record(&fresh).sequence, 2);
+    assert_eq!(
+        flight.client.receive(&fresh, 7).unwrap(),
+        [delivery(b"fresh server application")]
+    );
+    assert_eq!(flight.client.status(), Status::Open);
+}
+
+#[test]
+fn dq08_combined_flight_accepts_final_application_without_length() {
+    let mut flight = PendingFullFlight::new();
+    let last = omit_length(&flight.server, &flight.first_application);
+    let combined = flight.combined(&last, LengthForm::DatagramRemainder);
+    flight.receive_combined(&combined, 4);
+}
+
+#[test]
+fn dq08_missing_or_misplaced_ccs_preserves_pending_retry() {
+    let mut flight = PendingFullFlight::new();
+    let ccs_len = crate::decode_record(&flight.final_flight)
+        .unwrap()
+        .wire_len();
+    let (ccs, finished) = flight.final_flight.split_at(ccs_len);
+    let missing = [finished, &flight.first_application].concat();
+    let misplaced = [finished, ccs, &flight.first_application].concat();
+    let deadline = flight.client.deadline().unwrap();
+
+    for (at, invalid) in [(4, missing), (5, misplaced)] {
+        assert_eq!(
+            flight.client.receive(&invalid, at),
+            Err(WireError::InvalidRecord)
+        );
+        assert_eq!(flight.client.status(), Status::Negotiating);
+        assert_eq!(flight.client.deadline(), Some(deadline));
+        flight.assert_uncached(at);
+    }
+    assert_eq!(flight.client.tick(deadline - 1).unwrap(), []);
+    assert_eq!(
+        flight.client.tick(deadline).unwrap(),
+        [WireAction::Send(flight.client_commit)]
+    );
+}
+
+#[test]
+fn dq08_invalid_application_suffix_preserves_pending_state_for_combined_retry() {
+    let mut flight = PendingFullFlight::new();
+    flight.reject_invalid_suffix();
+    let combined = flight.explicit_combined();
+    flight.receive_combined(&combined, 5);
+    assert_eq!(flight.client.receive(&combined, 6).unwrap(), []);
+    assert_eq!(
+        flight.client.receive(&flight.first_application, 7).unwrap(),
+        []
+    );
+}
+
+#[test]
+fn dq08_standalone_final_flight_and_application_work_after_suffix_rejection() {
+    let mut flight = PendingFullFlight::new();
+    flight.reject_invalid_suffix();
+    assert_eq!(
+        flight.client.receive(&flight.final_flight, 5).unwrap(),
+        [WireAction::Established(HandshakeKind::Full)]
+    );
+    assert_eq!(flight.client.status(), Status::Open);
+    assert!(
+        flight
+            .client
+            .find_session(Some(flight.session_id), 5)
+            .unwrap()
+            .is_some()
+    );
+    assert_eq!(
+        flight.client.receive(&flight.first_application, 6).unwrap(),
+        [delivery(DQ08_PAYLOAD)]
+    );
+    assert_eq!(
+        flight.client.receive(&flight.first_application, 7).unwrap(),
+        []
+    );
+}

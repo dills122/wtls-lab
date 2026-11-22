@@ -387,7 +387,9 @@ impl Handshake {
                 },
                 State::ClientHello(hello),
             ) => client_hello_response(hello, datagram, now_ms, *retry, key_exchange, finished),
-            (_, State::ClientCommit(commit)) => client_commit(commit, datagram, finished),
+            (_, State::ClientCommit(commit)) => {
+                client_commit(commit, datagram, finished, &mut application_admitted)
+            }
             (_, State::ServerCommit(commit)) => {
                 server_commit(commit, datagram, finished, &mut application_admitted)
             }
@@ -607,22 +609,32 @@ fn client_commit(
     commit: &ClientCommit,
     incoming: &[Message],
     finished: &impl FinishedProvider,
+    application_admitted: &mut impl FnMut(usize, u16),
 ) -> Transition {
     if incoming == commit.server_hello {
         // The outstanding client flight owns retransmission timing.
         return Ok((None, Vec::new()));
     }
-    let [Message::ChangeCipherSpec, Message::Finished(proof)] = incoming else {
+    let [
+        Message::ChangeCipherSpec,
+        Message::Finished(proof),
+        rest @ ..,
+    ] = incoming
+    else {
         return Err(HandshakeError::UnexpectedDatagram);
     };
+    if !matches!(rest, [] | [Message::ApplicationData { sequence: 1, .. }]) {
+        return Err(HandshakeError::UnexpectedDatagram);
+    }
+    let data = application_batch(rest)?;
     verify_finished(finished, Role::Server, &commit.transcript, proof)?;
-    Ok((
-        Some(State::Open(Open::new(OpenSide::FullClient {
-            server_hello: commit.server_hello.clone(),
-            peer_commit: incoming.to_vec(),
-        }))),
-        vec![established(HandshakeKind::Full, commit.session)],
-    ))
+    let mut open = Open::new(OpenSide::FullClient {
+        server_hello: commit.server_hello.clone(),
+        peer_commit: incoming.to_vec(),
+    });
+    let mut actions = vec![established(HandshakeKind::Full, commit.session)];
+    open.deliver(data, &mut actions, application_admitted);
+    Ok((Some(State::Open(open)), actions))
 }
 
 fn server_commit(

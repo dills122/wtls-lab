@@ -15,7 +15,7 @@ KWTLS gives us a period gateway that completed a server-authenticated handshake 
 
 [KWTLS source archive](https://www.kannel.org/download/wtls/kwtls-1.0.3.tar.gz) · [WAP Forum 1.2.1 publisher index](https://www.wapforum.org/what/technical_1_2_1.htm) · [WAP-199 corrections and support plan](WAP_199_PROVISIONED_TRUST_PLAN.md#correction-crosswalk) · [Rust peer evidence](../fixtures/HISTORICAL_PEERS.md#blackberry-provisioned-trust-reconnect-lifecycle)
 
-For a future build of the lab baseline, use an OpenSSL build with RC5 enabled. The upstream Makefile groups the standalone tools in one dependency rule, so the lab built the static library and server object and linked the server explicitly. Fresh lab credentials supplied the stored native certificate path. Keep the portability changes and the loopback wrapper with the KWTLS harness.
+The [baseline recipe](KWTLS_LAB_BASELINE.md) preserves the build and launch steps, the successful capture, and the later fresh-process reruns that stopped before Finished. The [first discovery review](WTLS_DISCOVERY_FIRST_REVIEW.md) records the certificate-selection comparison and the remaining independent gateway gap.
 
 ## Round 1 — Gateway responsibilities
 

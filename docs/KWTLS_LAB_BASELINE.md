@@ -239,3 +239,71 @@ incremental lab patch and sanitized endpoint receipt. The patch applies
 after the earlier close-scope patch. Its SHA-256 is
 `19f263621c99d5b2ab807e0c17e06bf2d18cb76a167ce3b62195ccc3eb016cf6`.
 [Cache-control wire capture](../fixtures/blackberry-7290-kwtls-cache-control.trace)
+
+## Live handshake datagram loss
+
+DQ-04 used two separate KWTLS 1.0.3 processes with the same enrolled CA and
+native leaf as the authenticated baseline. This was the baseline executable
+(SHA-256 `92b4cd9aa37f972a44be20d06293385f9546ee38076519e60cc5a8319fc71e8a`)
+on RSA (8), DES-CBC (5), and full SHA (3). The host-only relay withheld
+one server UDP datagram per run, identified by its explicit record headers.
+It logged the drop and preserved its bytes separately. All other datagrams
+were forwarded as received. Retries below are timed from the original
+client datagram using the relay's monotonic clock.
+
+### First server flight
+
+The relay dropped the 427-byte ServerHello, Certificate, and ServerHelloDone
+datagram at event 2. The BlackBerry retransmitted all 949 bytes of its
+ClientHello unchanged after 5.618 seconds. KWTLS generated a new 427-byte
+certificate flight with the same leaf and a new session ID. The client
+offered `0x32` both times, and the gateway issued `0x33` in the withheld
+flight and `0x34` on retry. Both full-handshake Finished records followed.
+KWTLS logged establishment, the browser rendered **KWTLS protected reply**
+without a certificate prompt, and the backend matched protected WTP page
+acknowledgment `0680`.
+
+An initial attempt was inconclusive because the retry response used the same
+ID the BlackBerry had offered. The recorded run advanced the fresh gateway's
+ID counter through two unfinished loopback handshakes before the browser
+request. These preparations used separate sockets, ended at the certificate
+flight, and stayed outside the live trace. See the
+[different-ID comparison](#different-id-comparison).
+
+The trace ends at the 12th event, including the single drop marker and the
+protected page acknowledgment. SHA-256
+`5c1dd7b17d75eb3d424ea87a83a3e270b3416d239ede59fb49f8460d7ec51f42`.
+[First-flight loss capture](../fixtures/blackberry-7290-kwtls-drop-first.trace)
+
+### Final server flight
+
+In a fresh process, the BlackBerry offered `0x34` and KWTLS issued
+`0x31` with the same native leaf. KWTLS accepted the client Finished and
+logged establishment. The relay withheld the 51-byte server
+ChangeCipherSpec and protected Finished at event 4. The BlackBerry repeated
+all 189 bytes of its ClientKeyExchange, ChangeCipherSpec, and protected
+Finished datagram five times. The retries came 6.376, 12.551, 18.804,
+25.061, and 31.312 seconds after the original.
+
+The relay observed no server reply to any of those retries. At 37.580 seconds
+the client sent a fatal `handshake_failure`. The browser reported a secure
+negotiation failure and the backend received no protected page request or
+acknowledgment. An earlier setup attempt ended before the test handshake
+began. For the recorded run, the simulator was already back at its home
+screen when the fresh gateway started.
+
+The trace ends at the 10th event, including the single drop marker and the
+client alert. SHA-256
+`ed2770ef02c8d8aa95102368a2921a9fbf117e0f4c4c57c7280c0366ff48e358`.
+[Final-flight loss capture](../fixtures/blackberry-7290-kwtls-drop-final.trace)
+
+These are peer observations for this KWTLS build and DES-CBC suite. The
+Rust deterministic final-flight test uses the supported 3DES-CBC-EDE
+suite and verifies a byte-identical server replay and a protected echo.
+The Rust and historical results give us separate evidence for what the
+browser attempts, what the gateway does with the retry, and whether the
+application exchange completes.
+[Rust retry evidence](WAP_199_EVIDENCE_MATRIX.md#g2-full-handshake-final-flight-retry)
+
+The local `kwtls-blackberry/handshake-loss/` attachment contains the
+relay patch, the two withheld payloads, and the endpoint receipt.

@@ -307,3 +307,58 @@ application exchange completes.
 
 The local `kwtls-blackberry/handshake-loss/` attachment contains the
 relay patch, the two withheld payloads, and the endpoint receipt.
+
+## Live key refresh on one connection
+
+DQ-05 used the November 22, 2026 authenticated BlackBerry 7290 simulator
+and KWTLS 1.0.3 baseline build. The Browser used its enrolled lab CA
+without a certificate prompt. The full handshake replaced offered ID
+`0x34` with `0x33` and selected RSA (8), DES-CBC (5), full SHA (3),
+null compression, explicit sequences, and refresh value 5. KWTLS
+verified the client Finished. Two unfinished loopback hellos advanced
+the fresh gateway counter before the measured run, as in the
+[different-ID comparison](#different-id-comparison).
+
+The Browser loaded the lab page and refreshed it on that connection.
+The relay recorded one guest UDP source and one gateway-facing socket,
+with one ClientHello, one ServerHello, and one pair of cipher changes
+through the last acknowledgment. KWTLS and the relay stayed running.
+The relay forwarded the datagrams and timestamped the backend events on
+the same monotonic clock. For each page, the client request, server
+response, and client acknowledgment appeared in that order. The backend
+matched the WTP acknowledgment against the outstanding response.
+
+| Protected sequence | Client → KWTLS | KWTLS → client |
+| --- | --- | --- |
+| 7 | GET `388b` (event 14), acknowledgment at event 16 | Page `388d` (event 24), acknowledgment at event 25 |
+| 8 | Acknowledgment `388b` (event 16) | Page `388d` (event 27), acknowledgment at event 28 |
+| 9 | GET `388c` (event 17), acknowledgment at event 19 | Page `388d` (event 30), acknowledgment at event 31 |
+| 31 | Acknowledgment `3892` (event 50) | Page `38a2` (event 97), acknowledgment at event 98 |
+| 32 | GET `3893` (event 51), acknowledgment at event 53 | Page `38a3` (event 100), acknowledgment at event 101 |
+| 33 | Acknowledgment `3893` (event 53) | Page `38a4` (event 103), acknowledgment at event 104 |
+
+Server sequences 7–9 carried separate responses to repeated requests
+with TID `388d`. Each request, response, and matched acknowledgment
+completed before the next request. These are three acknowledged
+responses for one TID. The final fixture contains 33 acknowledged page
+exchanges across 29 distinct TIDs. The Browser displayed **KWTLS protected
+reply** during the run. For the reply at server sequence 34, the backend
+matched the last acknowledgment, TID `38a5`, on client sequence 69
+(event 107).
+
+The fixture ends at that acknowledgment, before a later unrelated WTP
+datagram. SHA-256
+`a59eeabe1bcb2bb2fa1421e51a4f33c74015b12463842dca971c69eb27aa695d`.
+The local `kwtls-blackberry/key-refresh/` attachment contains the relay
+logging patch, sanitized backend receipt, and event-to-transaction map.
+[Wire capture](../fixtures/blackberry-7290-kwtls-key-refresh.trace)
+
+Protected application traffic succeeded through sequence 8 and through
+the negotiated refresh boundary at sequence 32 in each direction.
+The acknowledgments establish application delivery for this peer pair.
+The capture exposes record sequence numbers and keeps the protected
+payloads opaque. The observed behavior supports retaining the existing refresh policy.
+The Rust 3DES-CBC-EDE tests remain separate evidence for ciphertext
+expectations, loss, and reordering across refresh.
+[WAP-199 §9.1](https://www.wapforum.org/tech/documents/WAP-199-WTLS-20000218-a.pdf#page=36) ·
+[Rust key-refresh evidence](WAP_199_EVIDENCE_MATRIX.md#protocol-and-selected-options)

@@ -206,3 +206,36 @@ The local `kwtls-blackberry/close-scopes/` attachment holds the two
 lab patches and a sanitized endpoint receipt. The executable SHA-256
 is `549367aed579455bbab3076bc8de5a8b5a71de0e4fbfe2fef6781c4d901325b8`.
 [Close-scope wire capture](../fixtures/blackberry-7290-kwtls-close-scopes.trace)
+
+### Session cache invalidation control
+
+A follow-up run reused the lab close sender, library, and enrolled CA.
+The private Session-close control added one operation after the existing
+termination event. It unlinked the current session's matching cache entry.
+The Connection-close control checked that its entry remained eligible.
+The relay, gateway process, and Browser stayed running for both refreshes.
+
+| Trace events | What the BlackBerry and gateway did | Protected page acknowledgment |
+| --- | --- | --- |
+| 1–10 | The initial full RSA / DES-CBC / full SHA handshake replaced the old offered ID `0x32` with `0x31`. | WTP `0019` |
+| 11–20 | The critical Connection-close alert left `0x31` cached. On refresh, the Browser reoffered `0x31`, the gateway echoed it, and both peers completed an abbreviated handshake. | WTP `22d4` |
+| 21–32 | The fatal Session-close alert was followed by removal of `0x31`. The Browser reoffered `0x31`, so the cache miss led to a new `0x32`, the same native certificate, RSA key exchange, and both full-handshake Finished messages. | WTP `3353` |
+
+The Browser rendered the protected page after all three requests without
+prompting for the certificate. The gateway verified the client Finished
+each time. The close descriptions and the cache outcomes come from the
+gateway log. The capture shows the next handshake branches and protected
+record boundaries.
+
+The baseline run and the control observed the same client decision after
+Session close. The BlackBerry offered the prior ID. The gateway's cache
+policy determined whether the two peers resumed or completed a full
+handshake. Cache invalidation in this run came from the lab-only control.
+
+The fixture contains 32 datagrams through the final page acknowledgment.
+SHA-256 `2a1291268a61526b2f512cf535bf5475e358f8f2992d6cb8a87903051e5ff265`.
+The local `kwtls-blackberry/close-cache-control/` attachment holds the
+incremental lab patch and sanitized endpoint receipt. The patch applies
+after the earlier close-scope patch. Its SHA-256 is
+`19f263621c99d5b2ab807e0c17e06bf2d18cb76a167ce3b62195ccc3eb016cf6`.
+[Cache-control wire capture](../fixtures/blackberry-7290-kwtls-cache-control.trace)

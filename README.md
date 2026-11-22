@@ -48,6 +48,8 @@ The normal UDP 9203 trace comes from the first four packets of the isolated WinW
 
 The Kannel alert comes from the WTLS-enabled 1.4.5 build's loopback reply to a 3DES offer. The WinWAP fixture is the first ClientHello from WinWAP for Windows 4.2.0.290 in secure connectionless mode on UDP 9202. Both were captured in an isolated test environment. The truncation fixture is synthetic.
 
+The [KWTLS source reference](docs/KWTLS_SOURCE_REFERENCE.md) maps the historical gateway's architecture and authenticated handshake to the live BlackBerry 7290 evidence and the corrected WAP-199 requirements.
+
 ## Handshake state machines
 
 The `handshake` module runs a client or server association with a caller-supplied clock. Each `Datagram` groups the semantic messages of one SDU. The machine consumes those messages and emits actions for the driver, including sends, establishment, application delivery and closure. The full path models a server certificate with a client key exchange. A matching saved session selects the abbreviated path and reverses the order of the Finished flights.

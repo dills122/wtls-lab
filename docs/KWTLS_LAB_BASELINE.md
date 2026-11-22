@@ -6,7 +6,8 @@ returned a different ID from the one the Browser offered. Two fresh-process
 attempts that reused the offered ID stopped before Finished.
 [Original wire capture](../fixtures/blackberry-7290-kwtls-full.trace) ·
 [Different-ID comparison](#different-id-comparison) ·
-[Live resumption](#live-blackberry-resumption)
+[Live resumption](#live-blackberry-resumption) ·
+[Live close scopes](#live-blackberry-close-scopes)
 
 ## Build and launch
 
@@ -162,7 +163,46 @@ Its SHA-256 is `e7f574b2eb5557c0d98903b48db27fc3a09415b4117b7f850d624d92a6cc83fc
 This run establishes that the BlackBerry accepts index `0` with KWTLS on
 this DES-CBC exchange. The earlier BlackBerry/Rust run used 3DES-CBC-EDE
 and succeeded after retaining the offered index `1`. The difference remains
-specific to the observed runs. The two close scopes and the ordering of
-traffic during same-tuple recovery remain open for KWTLS.
+specific to the observed runs. The ordering of traffic during same-tuple
+recovery remains open for KWTLS.
 [Full-to-resumed trace](../fixtures/blackberry-7290-kwtls-resumption.trace) ·
 [Rust peer evidence](../fixtures/HISTORICAL_PEERS.md#blackberry-abbreviated-handshake)
+
+## Live BlackBerry close scopes
+
+On November 21, 2026, the same instrumented KWTLS 1.0.3 process and
+BlackBerry 7290 Browser stayed running for a full handshake and both
+refreshes. The close trigger was added to the lab executable because
+the standalone program has no close command and its existing alert
+sender serializes cleartext. The trigger creates each protected alert
+with the existing KWTLS record machinery and dispatches the existing
+server termination event. The lab's `libwtls.a`, session lookup, and
+cache behavior were unchanged.
+
+| Trace events | Alert and next handshake | Protected page |
+| --- | --- | --- |
+| 1–10 | The full RSA / DES-CBC / full SHA exchange issued `0x32` and sent the configured native leaf. | Browser rendered the page and the backend matched WTP acknowledgment `2b98`. |
+| 11–20 | The gateway sent protected critical `connection_close_notify` (level 2, description 0). On refresh, the BlackBerry offered `0x32`. KWTLS echoed it with key-exchange index `0` and completed the abbreviated handshake. | Page rendered and acknowledgment `1d55` arrived. |
+| 22–30 | The gateway sent protected fatal `session_close_notify` (level 3, description 1). On refresh, the BlackBerry again offered `0x32`. KWTLS echoed it with index `0` and completed another abbreviated handshake. | Page rendered and acknowledgment `382f` arrived. |
+
+KWTLS logged successful establishment after both reconnects. Each
+abbreviated server flight carried ChangeCipherSpec and protected Finished
+after ServerHello. Each client returned its ChangeCipherSpec and protected
+Finished. No certificate prompt appeared during the three page requests.
+The endpoint log identifies the two encrypted alert descriptions. The
+capture shows no client close alert before either reconnect.
+
+WAP-199 §10.2.1 requires session invalidation on Session close. The observed
+KWTLS path kept the session eligible and reused it, so this comparison did
+not reach a full handshake after Session close. The earlier BlackBerry run
+against the Rust gateway also saw a reoffered ID after Session close. That
+gateway invalidated it and completed a full handshake.
+[WAP-199 §10.2.1](https://www.wapforum.org/tech/documents/WAP-199-WTLS-20000218-a.pdf#page=45) ·
+[Rust close comparison](../fixtures/HISTORICAL_PEERS.md#blackberry-connection-and-session-close)
+
+The 30-datagram fixture ends at the third page acknowledgment. SHA-256
+`8bc5ea1398f54e64748c503634ba7e156d3ff8dfac4e0e9805e388c133eae7f3`.
+The local `kwtls-blackberry/close-scopes/` attachment holds the two
+lab patches and a sanitized endpoint receipt. The executable SHA-256
+is `549367aed579455bbab3076bc8de5a8b5a71de0e4fbfe2fef6781c4d901325b8`.
+[Close-scope wire capture](../fixtures/blackberry-7290-kwtls-close-scopes.trace)

@@ -1,6 +1,6 @@
 # KWTLS 1.0.3 source reference
 
-**Status** — Historical source study and one live BlackBerry baseline. Use this page to orient future discovery rounds. The corrected WAP-199 documents govern protocol requirements, and the [support boundary](WAP_199_PROVISIONED_TRUST_PLAN.md#support-boundary) governs the Rust profile.
+**Status** — Historical source study and a reproduced live BlackBerry full-handshake baseline. Use this page to orient future discovery rounds. The corrected WAP-199 documents govern protocol requirements, and the [support boundary](WAP_199_PROVISIONED_TRUST_PLAN.md#support-boundary) governs the Rust profile.
 
 KWTLS gives us a period gateway that completed a server-authenticated handshake and served protected WAP traffic to the BlackBerry 7290. The test covered RSA, DES-CBC, and full SHA. The next design review should ask how to test issuer-aware certificate selection independently while retaining the Rust profile's 3DES-CBC-EDE suite.
 
@@ -15,7 +15,7 @@ KWTLS gives us a period gateway that completed a server-authenticated handshake 
 
 [KWTLS source archive](https://www.kannel.org/download/wtls/kwtls-1.0.3.tar.gz) · [WAP Forum 1.2.1 publisher index](https://www.wapforum.org/what/technical_1_2_1.htm) · [WAP-199 corrections and support plan](WAP_199_PROVISIONED_TRUST_PLAN.md#correction-crosswalk) · [Rust peer evidence](../fixtures/HISTORICAL_PEERS.md#blackberry-provisioned-trust-reconnect-lifecycle)
 
-The [baseline recipe](KWTLS_LAB_BASELINE.md) preserves the build and launch steps, the successful capture, and the later fresh-process reruns that stopped before Finished. The [first discovery review](WTLS_DISCOVERY_FIRST_REVIEW.md) records the certificate-selection comparison and the remaining independent gateway gap.
+The [baseline recipe](KWTLS_LAB_BASELINE.md) preserves the build and launch steps, the original full exchange, the two failed fresh-process attempts, and the successful rerun with a different returned session ID. The [first discovery review](WTLS_DISCOVERY_FIRST_REVIEW.md) records the certificate-selection comparison and the remaining independent gateway gap.
 
 ## Round 1 — Gateway responsibilities
 
@@ -49,12 +49,12 @@ WTP/WSP backend → page or other WAP response
 
 | Area | What the source shows | What the live run establishes |
 | --- | --- | --- |
-| Session resumption | The server looks up an offered Session ID in a process-level cache and has an abbreviated branch with key index zero and reused master-secret material. Newly assigned IDs are formatted from a process counter. Cipher activation adds session parameters to the linked cache. `wtls_server.c` lines 700–750 and 808–857, `wtls_machine.c` lines 48–49 and 328–391, `conn_state.c` lines 104–176. | The capture starts with an empty session ID and covers one full handshake. Abbreviated exchange, cache lifetime, and invalidation remain open for KWTLS. |
+| Session resumption | The server looks up an offered Session ID in a process-level cache and has an abbreviated branch with key index zero and reused master-secret material. Newly assigned IDs are formatted from a process counter. Cipher activation adds session parameters to the linked cache. `wtls_server.c` lines 700–750 and 808–857, `wtls_machine.c` lines 48–49 and 328–391, `conn_state.c` lines 104–176. | The original full handshake starts with an empty ID. A later full handshake succeeds when a cached ID is offered and KWTLS returns a different ID. Abbreviated exchange, cache lifetime, and invalidation remain open. [Different-ID comparison](KWTLS_LAB_BASELINE.md#different-id-comparison) |
 | UDP flight retry | The exchange handler has a branch that references a previous send buffer on a byte-identical ClientHello and a separate branch for a fresh hello. The reviewed first-flight path builds and sends the flight. The executable's `select()` call has no timer argument. `wtls_server.c` lines 1168–1208 and 1583–1607, `kwtls.c` lines 149–184. | One successful delivery sequence. Flight retention and retransmission, loss, and same-tuple recovery still need live evidence. |
 | Protected records | The send path schedules key calculation from the negotiated refresh value. The receive path invokes key calculation on a fixed eight-record cadence, and the calculation itself uses the negotiated value. `wtls_record.c` lines 264–273 and 1027–1029, `wtls_encrypt.c` lines 232–277. | The last visible protected sequence was 5. The run stayed below both the receive calculation at sequence 8 and the negotiated 32-record refresh boundary. |
 | Algorithm scope | The normal server selector in this release covers DES-CBC and RC5 choices with full SHA. Its selection branches omit 3DES-CBC-EDE. `wtls_server.c` lines 752–793. | This is independent authenticated gateway evidence for DES-CBC. The Rust client still needs an independent gateway run on its existing 3DES-CBC-EDE profile. |
 
-**Interpretation.** The server log records a matching client Finished. The following protected request and page acknowledgment show that the Browser proceeded after the server Finished. Treat refusal behavior, clean closure, loss handling, and session replacement as separate questions. The capture includes one trailing protected client record after the page acknowledgment. The minimal backend logged that record as unhandled and the run ended there.
+**Interpretation.** The server log records a matching client Finished. The following protected request and page acknowledgment show that the Browser proceeded after the server Finished. Treat refusal behavior, clean closure, loss handling, and session replacement as separate questions. The original capture includes one trailing protected client record after the page acknowledgment. The minimal backend logged that record as unhandled and the original run ended there.
 
 ## Carrying discoveries into the design loop
 

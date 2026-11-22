@@ -1,10 +1,11 @@
 # KWTLS BlackBerry baseline
 
 The BlackBerry 7290 completed a full authenticated WTLS handshake against KWTLS
-1.0.3 on November 21, 2026. Two later attempts against newly started gateways
-ended before Finished. Both returned the same session ID the client had offered
-from its cache. Reproducing the protected exchange from the existing simulator
-state remains open. [Successful wire capture](../fixtures/blackberry-7290-kwtls-full.trace)
+1.0.3 on November 21, 2026, first with an empty session ID and again when KWTLS
+returned a different ID from the one the Browser offered. Two fresh-process
+attempts that reused the offered ID stopped before Finished.
+[Original wire capture](../fixtures/blackberry-7290-kwtls-full.trace) ·
+[Different-ID comparison](#different-id-comparison)
 
 ## Build and launch
 
@@ -19,8 +20,8 @@ holds `reproduction/kwtls-1.0.3-macos.patch`, `live_lab.py`, and the separate
 certificate generator. The ZIP SHA-256 is
 `3f0f1db84d61fc66d78c1078b80f8accceba92095d908ca65c6ffacd2b508fa5`.
 Keep these with the discovery workspace. The gateway source, installer, private
-identity, and raw KWTLS logs stay local. The capture in Git contains only WTLS
-datagrams from the earlier successful run.
+identity, and raw KWTLS logs stay local. Git retains only the WTLS datagrams
+from the two successful captures.
 
 Extract the two source archives into sibling directories and use an x86-64
 shell under Rosetta on Apple Silicon. The patch replaces obsolete pointer
@@ -99,8 +100,36 @@ before Finished and the protected page. WAP-199 §10.3 uses a matching ID
 to signal resumption and calls for a new ID on a cache miss. KWTLS's counter
 restarts with each gateway process. The observations are consistent with
 the BlackBerry interpreting the ID as a resumption signal. The simulator's
-internal cause remains unconfirmed. A successful comparison with a different
-returned ID or an empty client ID is still needed. Preserve the enrolled CA
-for that comparison.
+internal cause remains unconfirmed.
 [WAP-199 §10.3](https://www.wapforum.org/tech/documents/WAP-199-WTLS-20000218-a.pdf#page=49) ·
 [KWTLS session source](KWTLS_SOURCE_REFERENCE.md#round-3--lifecycle-and-limits-of-the-evidence)
+
+### Different-ID comparison
+
+Start the same KWTLS binary with the same enrolled CA and leaf. Before the
+Browser request, send the original capture's empty-ID ClientHello to KWTLS
+on loopback UDP 9203 from a separate socket. The preparation ends when
+KWTLS allocates `0x31` and sends the certificate flight. This advances
+the process counter before the live request. The probe ends before
+ClientKeyExchange and creates no completed session. It stays outside the
+BlackBerry capture taken at the host-only relay.
+
+The rerun used the existing lab executable, with SHA-256
+`92b4cd9aa37f972a44be20d06293385f9546ee38076519e60cc5a8319fc71e8a`.
+The failed-run notes identify the executable by its lab path.
+
+On the November 21 comparison, the relaunched BlackBerry offered cached ID
+`0x31` (ASCII `1`). KWTLS selected fresh ID `0x32` (ASCII `2`) and sent
+the same native leaf on RSA (8), DES-CBC (5), and full SHA (3). The capture
+contains ClientKeyExchange, both ChangeCipherSpec messages, and the protected
+Finished record in each direction. KWTLS logged successful verification
+of the client Finished. The BlackBerry rendered **KWTLS protected reply**
+without a certificate prompt and acknowledged WTP transaction `250b`.
+The page and acknowledgment show the client proceeded after the server Finished.
+
+The fixture preserves the ten datagrams through that acknowledgment.
+Its SHA-256 is `34b3ad2cbb43b41d78422455c111a9a1a7be76750819267cb632552741d50318`.
+This reproduces the full authenticated exchange with a cached ID present
+and supports the session-ID collision explanation for the two earlier failures.
+Abbreviated resumption remains a separate check.
+[Different-ID wire capture](../fixtures/blackberry-7290-kwtls-distinct-id.trace)

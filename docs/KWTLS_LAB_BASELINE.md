@@ -14,11 +14,13 @@ state remains open. [Successful wire capture](../fixtures/blackberry-7290-kwtls-
 | [OpenSSL 1.0.2u source](https://www.openssl.org/source/old/1.0.2/openssl-1.0.2u.tar.gz) | `ecd0c6ffb493dd06707d38b14bb4d8c2288bb7033735606569d8f90f89669d16` |
 | [RIM JDE 4.0 installer](https://archive.org/details/blackberry-jde) | `10f73ec16376e617cdf74bbe79c6332e38c64e8338751acf704412a96e19afb0` |
 
-The local reproduction bundle accompanying this run holds the portability patch,
-`live_lab.py`, and the separate certificate generator. Keep these with the
-discovery workspace. The gateway source, installer, private identity, and raw
-KWTLS logs stay local. The capture in Git contains only WTLS datagrams from the
-earlier successful run.
+The local reproduction attachment, `kwtls-blackberry/kwtls-reproduction.zip`,
+holds `reproduction/kwtls-1.0.3-macos.patch`, `live_lab.py`, and the separate
+certificate generator. The ZIP SHA-256 is
+`3f0f1db84d61fc66d78c1078b80f8accceba92095d908ca65c6ffacd2b508fa5`.
+Keep these with the discovery workspace. The gateway source, installer, private
+identity, and raw KWTLS logs stay local. The capture in Git contains only WTLS
+datagrams from the earlier successful run.
 
 Extract the two source archives into sibling directories and use an x86-64
 shell under Rosetta on Apple Silicon. The patch replaces obsolete pointer
@@ -86,10 +88,13 @@ and the backend matched the protected page acknowledgment to WTP transaction
 `1b7c`. The acknowledgment and the page are the client-side evidence of the
 completed exchange.
 
-On each rerun the BlackBerry offered the one-byte cached ID `0x31` (ASCII
-`1`), including after a simulator process restart. KWTLS logged a new session
-assignment of `1` and sent a full certificate flight. The client returned
-fatal `handshake_failure` and displayed JVM Error 104. Both runs stopped
+The local `kwtls-blackberry/reruns/` attachment holds
+`blackberry-warm-restart.trace` for the already-running simulator and
+`blackberry-check.trace` for the relaunched simulator. In each capture the
+BlackBerry offered the one-byte cached ID `0x31` (ASCII `1`), and KWTLS sent
+that ID in a full certificate flight. KWTLS's log identifies it as a new
+assignment. The client returned fatal `handshake_failure`. The live simulator
+display showed JVM Error 104 on each attempt. Both runs stopped
 before Finished and the protected page. WAP-199 §10.3 uses a matching ID
 to signal resumption and calls for a new ID on a cache miss. KWTLS's counter
 restarts with each gateway process. The observations are consistent with

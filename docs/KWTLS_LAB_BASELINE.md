@@ -5,7 +5,8 @@ The BlackBerry 7290 completed a full authenticated WTLS handshake against KWTLS
 returned a different ID from the one the Browser offered. Two fresh-process
 attempts that reused the offered ID stopped before Finished.
 [Original wire capture](../fixtures/blackberry-7290-kwtls-full.trace) ·
-[Different-ID comparison](#different-id-comparison)
+[Different-ID comparison](#different-id-comparison) ·
+[Live resumption](#live-blackberry-resumption)
 
 ## Build and launch
 
@@ -20,8 +21,8 @@ holds `reproduction/kwtls-1.0.3-macos.patch`, `live_lab.py`, and the separate
 certificate generator. The ZIP SHA-256 is
 `3f0f1db84d61fc66d78c1078b80f8accceba92095d908ca65c6ffacd2b508fa5`.
 Keep these with the discovery workspace. The gateway source, installer, private
-identity, and raw KWTLS logs stay local. Git retains only the WTLS datagrams
-from the two successful captures.
+identity, and raw KWTLS logs stay local. Git retains the WTLS datagrams
+from the successful lab exchanges.
 
 Extract the two source archives into sibling directories and use an x86-64
 shell under Rosetta on Apple Silicon. The patch replaces obsolete pointer
@@ -131,5 +132,37 @@ The fixture preserves the ten datagrams through that acknowledgment.
 Its SHA-256 is `34b3ad2cbb43b41d78422455c111a9a1a7be76750819267cb632552741d50318`.
 This reproduces the full authenticated exchange with a cached ID present
 and supports the session-ID collision explanation for the two earlier failures.
-Abbreviated resumption remains a separate check.
 [Different-ID wire capture](../fixtures/blackberry-7290-kwtls-distinct-id.trace)
+
+## Live BlackBerry resumption
+
+On November 21, 2026, a fresh KWTLS 1.0.3 lab process served two requests
+with the existing enrolled CA. The first request used a full authenticated
+handshake. Between requests, the operator closed and relaunched only the
+BlackBerry simulator and then requested the same lab URL. The KWTLS
+process and the relay's gateway-facing UDP socket stayed up for both
+requests. The gateway process was stopped after the second page.
+
+| Trace event | Observation |
+| --- | --- |
+| 1–4 | The BlackBerry offered a previously cached ID of `0x32`. KWTLS returned `0x31`, sent the configured native leaf, and completed the full RSA / DES-CBC / full SHA exchange. |
+| 8–10 | The browser rendered **KWTLS protected reply** and the backend matched protected WTP page acknowledgment `2e87`. |
+| 11–12 | The restarted client reoffered `0x31`. KWTLS logged a cache hit and echoed `0x31` in ServerHello with key-exchange index `0` and the same cipher and MAC. The 84-byte flight contains ServerHello, ChangeCipherSpec, and protected Finished. Both hellos used fresh randoms. |
+| 13 | The BlackBerry coalesced ChangeCipherSpec, protected Finished, and a protected application record in one 1,056-byte datagram. KWTLS logged successful session establishment. The relay's backend logged WSP Connect transaction `13ac` immediately after receiving the datagram. |
+| 16–18 | The browser rendered the page again. The backend matched a second protected page acknowledgment, WTP transaction `13ad`. |
+
+Neither exchange prompted for certificate approval. The abbreviated
+exchange omitted Certificate, ServerHelloDone, and ClientKeyExchange.
+The encrypted Finished bodies are opaque in the fixture. Gateway
+verification of the client Finished and the browser's subsequent protected
+traffic and page rendering supply endpoint evidence.
+
+The fixture contains 18 datagrams through the second page acknowledgment.
+Its SHA-256 is `e7f574b2eb5557c0d98903b48db27fc3a09415b4117b7f850d624d92a6cc83fc`.
+This run establishes that the BlackBerry accepts index `0` with KWTLS on
+this DES-CBC exchange. The earlier BlackBerry/Rust run used 3DES-CBC-EDE
+and succeeded after retaining the offered index `1`. The difference remains
+specific to the observed runs. The two close scopes and the ordering of
+traffic during same-tuple recovery remain open for KWTLS.
+[Full-to-resumed trace](../fixtures/blackberry-7290-kwtls-resumption.trace) ·
+[Rust peer evidence](../fixtures/HISTORICAL_PEERS.md#blackberry-abbreviated-handshake)

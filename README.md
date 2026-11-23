@@ -1,13 +1,26 @@
-# WTLS lab
+# wtls-lab
 
-A standalone Rust workspace for WAP-199 record framing, handshake inspection, and a protected wire peer. Run the inspector from the workspace root.
+A standalone WAP Labs workspace for implementing and testing Wireless Transport Layer Security (WTLS) as specified by WAP-199. The Rust library and tools have their own build and tests. They can be used without a Waves checkout.
+
+- The library provides the record codec, client and server handshake state machines, protected wire peers, and a reusable UDP adapter.
+- `wtls-inspect` reads individual datagrams and timelines from saved captures. The lab binaries exercise historical clients with the UDP adapter.
+- The [support boundary](docs/WAP_199_PROVISIONED_TRUST_PLAN.md#support-boundary), [evidence matrix](docs/WAP_199_EVIDENCE_MATRIX.md), and [discovery queue](docs/WTLS_DISCOVERY_QUEUE.md) describe the supported profile, verified peers, and open work.
+
+This is a pre-alpha implementation of a historical protocol. Keep live interoperability testing on an isolated network.
+
+## Quick start
+
+Install a recent stable Rust toolchain, the OpenSSL development libraries, and pkg-config. The test suite uses OpenSSL 3.2 or later. Run these commands from the workspace root.
 
 ```sh
-cargo run --offline --bin wtls-inspect -- fixtures/hello-request-implicit.hex
-cargo run --offline --bin wtls-inspect -- fixtures/hello-request-explicit.hex
-cargo run --offline --bin wtls-inspect -- fixtures/concatenated.hex
-cargo test --offline
+cargo test --locked --workspace
+cargo run --locked --bin wtls-inspect -- fixtures/concatenated.hex
+cargo run --locked --bin wtls-inspect -- --timeline fixtures/blackberry-7290-kwtls-drop-final.trace
 ```
+
+The test suite runs locally without the historical VM or gateway. The [KWTLS lab recipe](docs/KWTLS_LAB_BASELINE.md) describes the separate live setup.
+
+## Record fixtures
 
 Each fixture file is one transport service data unit (SDU). Write each octet as two hex digits, separated by whitespace. A `#` starts a comment. The inspector prints each record's offset, content type, header octet, sequence number, fragment length, length form, and cipher-spec bit. The cipher-spec bit reports the wire field alone.
 
@@ -56,7 +69,7 @@ The `handshake` module runs a client or server association with a caller-supplie
 
 `deadline` and `tick` let a driver schedule bounded client retries. A full handshake reuses the original flight on retransmission. An abbreviated client keeps prepending its CCS and Finished until it accepts server data or the duplicate-Finished notification. A server recognizes the duplicate Finished, keeps its open state and discards duplicate application records. Both peers support connection and session closure. Connection closure preserves the cached session. Session closure invalidates it.
 
-The test driver exchanges typed datagrams in memory and uses a fixture-only Finished provider. Its application sequence window is a model of authenticated record acceptance. Establishment indicates the modeled association state. To connect it to the record codec, a later adapter must supply real handshake and alert serialization, key exchange and trust, directional cipher changes, authenticated record sequences, and a real Finished provider. The current one-association model uses one externally supplied cached session ID and fixes the full handshake to the server-certificate path. Additional negotiation variants and renegotiation are separate work.
+The state-machine tests exchange typed datagrams in memory and use a fixture-only Finished provider. The wire peer connects the same state machines to record framing, protected records, and certificate verification. The full handshake in the standalone authenticated profile uses a server certificate.
 
 ```sh
 cargo test --offline --test handshake
@@ -69,6 +82,8 @@ The flight and closure rules come from WAP-199 §§7, 9.2.3.1 and 10.1–10.5.9.
 The wire peer accepts multiple protected application records in a UDP
 datagram, including after the verified abbreviated client commit. It
 delivers each replay-admitted record separately and in datagram order.
+The full client handshake can also deliver one application record that
+follows the verified server Finished in the same datagram.
 The send API emits one application record per call, with the existing
 abbreviated commit prefix when required.
 [Receive behavior and tests](docs/WAP_199_APPLICATION_RECORD_BATCH_PLAN.md)

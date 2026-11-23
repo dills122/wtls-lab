@@ -18,7 +18,7 @@ client and server requirements, including an anonymous option for each role.
 The WinWAP server profile is separately selected. WAP-261 coverage, additional
 suites, X.509, client certificates, and WIM integration are deferred.
 [WAP-199 §§10.5.1–10.5.2 and Appendix E](https://www.wapforum.org/tech/documents/WAP-199-WTLS-20000218-a.pdf) ·
-[WinWAP profile](../README.md#direct-winwap-compatibility-test)
+[WinWAP profile](REFERENCE.md#direct-winwap-compatibility-test)
 
 ## Correction crosswalk
 

@@ -1,0 +1,108 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="description" content="A Rust implementation of WAP-199 WTLS, with a capture inspector and an isolated Windows XP lab for classic WAP peers.">
+  <meta name="color-scheme" content="light">
+  <title>wtls-lab · WAP Labs</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <a class="skip-link" href="#main">Skip to content</a>
+  <header class="masthead">
+    <div class="wrap masthead-inner">
+      <a class="brand" href="./"><span class="brand-mark" aria-hidden="true">[W]</span> WAP Labs</a>
+      <nav aria-label="Main">
+        <a href="#guides">Guides</a>
+        <a href="#status">Status</a>
+        <a href="https://github.com/dills122/wtls-lab">GitHub</a>
+      </nav>
+    </div>
+  </header>
+  <main id="main">
+    <section class="hero">
+      <div class="wrap hero-grid">
+        <div>
+          <p class="eyebrow">Wireless Transport Layer Security · WAP-199</p>
+          <h1>wtls-lab</h1>
+          <p class="lead">A Rust implementation of the protocol that secured early WAP traffic. Inspect captured exchanges, run repeatable wire tests, and compare results with period clients in Windows XP.</p>
+          <div class="actions">
+            <a class="button primary" href="https://github.com/dills122/wtls-lab/blob/main/docs/README.md">Read the handbook</a>
+            <a class="button secondary" href="#quickstart">Run the tools</a>
+          </div>
+        </div>
+        <figure class="trace">
+          <figcaption>One full handshake <span>BlackBerry 7290 with KWTLS</span></figcaption>
+          <table>
+            <caption class="sr-only">Records grouped by datagram in the recorded handshake</caption>
+            <thead>
+              <tr><th scope="col">Sender</th><th scope="col">Datagram</th></tr>
+            </thead>
+            <tbody>
+              <tr><td>Client</td><td>ClientHello</td></tr>
+              <tr><td>Gateway</td><td>ServerHello · Certificate · ServerHelloDone</td></tr>
+              <tr><td>Client</td><td>ClientKeyExchange · CCS · Finished</td></tr>
+              <tr><td>Gateway</td><td>CCS · Finished</td></tr>
+            </tbody>
+          </table>
+          <p class="trace-result">Protected page acknowledged. <a href="https://github.com/dills122/wtls-lab/blob/main/docs/KWTLS_LAB_BASELINE.md#live-key-refresh-on-one-connection">Read the capture notes</a>.</p>
+        </figure>
+      </div>
+    </section>
+
+    <section id="guides" class="wrap section">
+      <h2>Lab guides</h2>
+      <div class="guide-grid">
+        <article>
+          <h3><a href="https://github.com/dills122/wtls-lab/blob/main/docs/lab/XP_SETUP.md">Windows XP setup</a></h3>
+          <p>Wire up a host-only guest, launch the 7290 Browser, and route traffic to a gateway on the host.</p>
+        </article>
+        <article>
+          <h3><a href="https://github.com/dills122/wtls-lab/blob/main/docs/lab/TOOLS.md">Tools and period peers</a></h3>
+          <p>See where Rust, Ruflo, UTM, KWTLS, BlackBerry, and WinWAP fit, with the verified suites for each pairing.</p>
+        </article>
+        <article>
+          <h3><a href="https://github.com/dills122/wtls-lab/blob/main/docs/lab/TESTING.md">Testing and evidence</a></h3>
+          <p>Run the host checks or a live capture. Learn what proves a handshake, a retry, or a protected page.</p>
+        </article>
+      </div>
+    </section>
+
+    <section id="quickstart" class="section rule">
+      <div class="wrap split">
+        <div>
+          <h2>Start on the host</h2>
+          <p>Use a recent stable Rust toolchain, OpenSSL 3.2+ development libraries, and pkg-config. Host tests and saved captures work without a VM.</p>
+          <a href="https://github.com/dills122/wtls-lab/blob/main/docs/REFERENCE.md#handshake-timeline">See the timeline format</a>
+        </div>
+        <pre aria-label="Host quick start"><code>git clone https://github.com/dills122/wtls-lab.git
+cd wtls-lab
+cargo test --locked --workspace
+cargo run --locked --bin wtls-inspect -- --timeline \
+  fixtures/blackberry-7290-kwtls-drop-final.trace</code></pre>
+      </div>
+    </section>
+
+    <section id="status" class="wrap section split">
+      <div>
+        <h2>What works today</h2>
+        <p>The pre-alpha library covers one authenticated WAP-199 UDP profile with RSA, 3DES-CBC-EDE, and full SHA. It handles full and resumed handshakes, protected records, key refresh, and closure.</p>
+      </div>
+      <div class="status-notes">
+        <p><strong>Live evidence.</strong> BlackBerry 7290 verified the Rust gateway. The separate KWTLS runs exercised authenticated DES-CBC with the same historical client.</p>
+        <p><strong>Open work.</strong> Independent gateway verification for the Rust client on the exact supported suite is still open.</p>
+        <a href="https://github.com/dills122/wtls-lab/blob/main/docs/WAP_199_EVIDENCE_MATRIX.md">Support and evidence</a>
+        <a href="https://github.com/dills122/wtls-lab/blob/main/docs/WTLS_DISCOVERY_QUEUE.md">Discovery queue</a>
+      </div>
+    </section>
+  </main>
+  <footer>
+    <div class="wrap footer-inner">
+      <a href="https://github.com/dills122/wap-labs">WAP Labs</a>
+      <span>Historical interoperability in an isolated lab.</span>
+      <a href="https://www.wapforum.org/what/technical_1_2_1.htm">WAP 1.2.1 specifications</a>
+    </div>
+  </footer>
+</body>
+</html>

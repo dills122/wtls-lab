@@ -66,11 +66,11 @@ These grouped rows account for the remaining IDs in A.1 and A.2.
 | S-007 O | C-007 O | HelloRequest (§10.5.1 / §10.5.1.1) | **Deferred.** Server sending and client startup after a clear HelloRequest are distinct roles. Inspector decoding alone does not exercise either endpoint behavior. |
 | S-011 O | C-011 O | Implicit sequence numbering (§9.2.3.1) | **Deferred.** The UDP profile uses explicit numbers. |
 | S-031–033, S-035–038, S-049 O | C-031–033, C-035–038, C-049 O | Other anonymous exchanges (Appendix A) | **Deferred.** DH, limited-size RSA and ECDH variants. |
-| S-034 O | C-034 O | Anonymous RSA (Appendix A) | **Server compatibility only.** WinWAP exercised the explicitly selected RSA_ANON/DES-CBC path and protected WSP. **Client deferred.** [WinWAP mode and evidence](../README.md#direct-winwap-compatibility-test) |
+| S-034 O | C-034 O | Anonymous RSA (Appendix A) | **Server compatibility only.** WinWAP exercised the explicitly selected RSA_ANON/DES-CBC path and protected WSP. **Client deferred.** [WinWAP mode and evidence](REFERENCE.md#direct-winwap-compatibility-test) |
 | S-062–064 O | C-062–064 O | Other authenticated exchanges (Appendix A) | **Deferred.** 062 and 063 depend on same-role 061. 064 depends on 165 or 167. |
 | S-070–072 O | C-070–072 O | Client authentication (Appendix A) | **Deferred.** Parent 070 depends on 071 or 072. See the _106 overlay below. |
 | S-080, S-090 O | C-080, C-090 O | Shared-secret and null key exchange (Appendix A) | **Deferred.** |
-| S-103 O | C-103 O | DES-CBC (Appendix A) | **Server compatibility only.** Explicitly selected with RSA_ANON for WinWAP. **Client deferred.** [WinWAP mode](../README.md#direct-winwap-compatibility-test) |
+| S-103 O | C-103 O | DES-CBC (Appendix A) | **Server compatibility only.** Explicitly selected with RSA_ANON for WinWAP. **Client deferred.** [WinWAP mode](REFERENCE.md#direct-winwap-compatibility-test) |
 | S-101–102, S-105–108, S-120 O | C-101–102, C-105–108, C-120 O | Other data ciphers and null encryption (Appendix A) | **Deferred.** |
 | S-132, S-133, S-135–137, S-140 O | C-132, C-133, C-135–137, C-140 O | Truncated SHA, MD5, and null MAC options (Appendix A) | **Deferred.** |
 | S-134 N/A | C-134 N/A | Removed MAC option | **N/A.** |

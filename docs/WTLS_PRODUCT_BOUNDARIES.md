@@ -60,5 +60,5 @@ Review the transcripts and ownership before changing the public API.
 A concrete missing observation from a caller should drive the next
 diagnostic change. Consider WAP service primitives separately when
 there is a caller for them.
-[Current adapter and lab app](../README.md#reusable-udp-adapter-and-blackberry-lab) ·
-[Inspector format](../README.md#handshake-timeline)
+[Current adapter and lab app](REFERENCE.md#reusable-udp-adapter-and-blackberry-lab) ·
+[Inspector format](REFERENCE.md#handshake-timeline)
